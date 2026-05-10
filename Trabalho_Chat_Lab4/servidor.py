@@ -5,102 +5,150 @@ import threading
 import json
 
 # define a localizacao do servidor
-HOST = '' # vazio indica que podera receber requisicoes a partir de qq interface de rede da maquina
-PORT = 65432 # porta de acesso
+HOST = ''  # vazio indica que podera receber requisicoes a partir de qq interface de rede da maquina
+PORT = 65432  # porta de acesso
 
-# Banco de Dados  (não será necessário)
-# IP_DADOS = 'localhost' 
-# PORTA_DADOS = 65433
-
-#define a lista de I/O de interesse (jah inclui a entrada padrao)
-entradas = [sys.stdin]
-#armazena as conexoes completadas
-conexoes = {}
-#lock para acesso do dicionario 'conexoes'
-lock = threading.Lock()
+entradas = [sys.stdin]   # define a lista de I/O de interesse (ja inclui a entrada padrao)
+conexoes = {}  # armazena as conexoes completadas
+lock = threading.Lock()  # lock para acesso do dicionario 'conexoes'
 
 def iniciaServidor():
-	'''Cria um socket de servidor e o coloca em modo de espera por conexoes
-	Saida: o socket criado'''
-	# cria o socket 
-	sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM) #Internet( IPv4 + TCP) 
+    """Cria um socket de servidor e o coloca em modo de espera por conexoes"""
+    # cria o socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # Internet( IPv4 + TCP)
+    sock.bind((HOST, PORT))  # vincula a localizacao do servidor
+    sock.listen(5)  # coloca-se em modo de espera por conexoes
+    sock.setblocking(False)  # configura o socket para o modo nao-bloqueante
+    entradas.append(sock)  # inclui o socket principal na lista de entradas de interesse
+    print(f"Camada de Processamento pronta na porta {PORT}...")
 
-	# vincula a localizacao do servidor
-	sock.bind((HOST, PORT))
-
-	# coloca-se em modo de espera por conexoes
-	sock.listen(5) 
-
-	# configura o socket para o modo nao-bloqueante
-	sock.setblocking(False)
-
-	# inclui o socket principal na lista de entradas de interesse
-	entradas.append(sock)
-	
-	print(f"Camada de Processamento pronta na porta {PORT}...")
-
-	return sock
+    return sock
 
 def aceitaConexao(sock):
-	'''Aceita o pedido de conexao de um cliente
+	"""Aceita o pedido de conexao de um cliente
 	Entrada: o socket do servidor
-	Saida: o novo socket da conexao e o endereco do cliente'''
+	Saida: o novo socket da conexao e o endereco do cliente"""
 
-	# estabelece conexao com o proximo cliente
-	clisock, endr = sock.accept()
-
-	# registra a nova conexao
-	lock.acquire()
-	conexoes[clisock] = endr 
-	lock.release() 
+	clisock, endr = sock.accept()  # estabelece conexao com o proximo cliente
 
 	return clisock, endr
 
 def atendeRequisicoes(clisock, endr):
-	'''Recebe mensagens e as envia de volta para o cliente (ate o cliente finalizar)
+	"""Recebe mensagens e atende requisições do cliente
 	Entrada: socket da conexao e endereco do cliente
-	Saida: '''
+	Saida: """
 
-	while True: 
-		#recebe dados do cliente
-		data = clisock.recv(1024).decode('utf-8')
-		#formato da mensagem: JSON
-		msg_decoded = json.loads(data)
-		if not msg_decoded:
+	while True:
+		data = clisock.recv(1024).decode('utf-8')  # recebe dados do cliente
+		if not data:
+			# remove conexao e encerra
+			lock.acquire()
+			if clisock in conexoes:
+				del conexoes[clisock]
+			lock.release()
+			print(str(endr) + '-> desconectou')
+			break
+		try:
+			msg_decoded = json.loads(data)  # formato da mensagem: JSON
+		except Exception:
+			# mensagem inválida
 			print(str(endr) + '-> mensagem no formato inválido!')
 			return
-		if msg_decoded[operation] == 4:  #Cliente encerrou aplicação
-			print(str(endr) + '-> encerrou')
+
+		# Códigos de mensagem:
+		# -1 - Requisitar lista de usuários ativos
+		# 0 - Informar nome do usuário e estabelecer conexão
+		# 1 - Mudar status
+		# 2 - Iniciar conversa
+		# 3 - Encerrar aplicação
+
+		if msg_decoded.get("operation") == 3:  # Cliente encerrou aplicação
+			print(f'{conexoes[clisock].get("username", "Usuário desconhecido")} ({str(endr)}) -> encerrou')
 			lock.acquire()
-			del conexoes[clisock] #retira o cliente da lista de conexoes ativas
+			if clisock in conexoes:
+				del conexoes[clisock]  # retira o cliente da lista de conexoes ativas
 			lock.release()
-			clisock.close() # encerra a conexao com o cliente
-			return
-		
-		
+			break
 
-		print(str(endr) + ': ' + str(data))
-		arquivo, palavra = data.split(';')
+		if msg_decoded.get("operation") == 0:  # Cliente informando nome de usuário e estabelecendo conexão
+			username = msg_decoded.get('username')
+			resposta = ''
 
-		# --- Comunicação com a Camada de Dados ---
-		try:
-			with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s_dados:
-				s_dados.connect((IP_DADOS, PORTA_DADOS))
-				s_dados.sendall(arquivo.encode('utf-8'))
-				conteudo = s_dados.recv(4096).decode('utf-8')
-			
-			# Lógica de Processamento
-			if conteudo.startswith("ERRO:"):
-				resposta = conteudo
+			if any(conn_info["username"] == username for conn_info in conexoes.values()):
+				resposta = f"ERRO: O nome de usuário '{username}' já está em uso. Conexão não estabelecida."
+				print(f"[REGISTRO] Tentativa de duplicação: '{username}' de {endr}")
+				try:
+					clisock.sendall(resposta.encode('utf-8'))
+				except Exception:
+					pass
+				return
 			else:
-				contagem = conteudo.count(palavra)
-				resposta = str(contagem)
-		except Exception as e:
-			resposta = f"ERRO de conexão com camada de dados: {e}"
+				lock.acquire()
+				conexoes[clisock] = {"endereco": endr, "username": username, "status": "Ativo"}
+				lock.release()
+				resposta = f"Bem-vindo, {username}! Seu status inicial é Ativo."
+				print(f"[REGISTRO] Usuário '{username}' conectado de {endr} | Total: {len(conexoes)}")
 
-		clisock.sendall(resposta.encode('utf-8'))
+			clisock.sendall(resposta.encode('utf-8'))
 
-	clisock.close() # encerra a conexao com o cliente
+		elif msg_decoded.get("operation") == -1:  # Cliente solicitando lista de usuários ativos
+			resposta = 'Lista de Usuários Ativos:\n'
+			resposta += '\n'.join([f"{conn_info['username']} - {conn_info['status']}" for conn_info in conexoes.values()])
+			print(f"[LISTA] {msg_decoded.get('username')} solicitou lista de usuários ativos")
+			clisock.sendall(resposta.encode('utf-8'))
+
+		elif msg_decoded.get("operation") == 1:  # Cliente solicitando mudança de status
+			novo_status = msg_decoded.get('status')
+			if novo_status in ["Ativo", "Inativo"]:
+				lock.acquire()
+				usuario_nome = ''
+				if clisock in conexoes:
+					usuario_nome = conexoes[clisock]['username']
+					conexoes[clisock]['status'] = novo_status
+				lock.release()
+				print(f"[STATUS] '{usuario_nome}' mudou status para '{novo_status}'")
+				resposta = f"Status de {usuario_nome} atualizado para {novo_status} com sucesso!"
+			else:
+				resposta = f"ERRO: Status '{novo_status}' é inválido. Status não atualizado."
+			clisock.sendall(resposta.encode('utf-8'))
+
+		elif msg_decoded.get("operation") == 2:  # Cliente solicitando iniciar conversa
+			try:
+				remetente = conexoes[clisock]["username"]
+				dados = json.loads(msg_decoded["body"])
+				destinatario = dados["to"]
+				conteudo_msg = dados["data"]
+
+				# Procura se o destinatário existe e está ativo
+				socket_destinatario = None
+				lock.acquire()
+				for sock, info in conexoes.items():
+					if info.get("username") == destinatario:
+						socket_destinatario = sock
+						break
+				lock.release()
+
+				if socket_destinatario:
+					# Destinatário está ativo, envia a mensagem direto, em formato JSON: {"from": remetente, "data": conteudo_msg}
+					msg_json = json.dumps({"from": remetente, "data": conteudo_msg})
+					try:
+						socket_destinatario.sendall(msg_json.encode('utf-8'))
+						resposta = f"Mensagem enviada para {destinatario}."
+						msg_preview = conteudo_msg[:50] if len(conteudo_msg) > 50 else conteudo_msg
+						print(f"[MENSAGEM] '{remetente}' → '{destinatario}': {msg_preview}")
+					except Exception as e:
+						resposta = f"Erro ao enviar mensagem: {e}"
+						print(f"[ERRO] Falha ao enviar de '{remetente}' para '{destinatario}': {e}")
+				else:
+					resposta = f"Não foi possível estabelecer comunicacao com {destinatario}."
+					print(f"[OFFLINE] '{remetente}' tentou enviar para '{destinatario}', mas não está online")
+
+			except Exception as e:
+				resposta = f"ERRO ao processar mensagem: {e}"
+
+			clisock.sendall(resposta.encode('utf-8'))
+
+	clisock.close()  # encerra a conexao com o cliente
 
 
 def main():

@@ -2,53 +2,27 @@ import socket
 import json
 import subprocess
 import os
-import threading
-
-def escuta_mensagens(s, NOME_USUARIO):
-    """Thread que fica escutando mensagens chegando do servidor
-    e salva no arquivo local do usuário em formato legível."""
-    while True:
-        try:
-            msg = s.recv(4096).decode('utf-8')
-            if not msg: 
-                break
-            try: msg_decoded = json.loads(msg)
-            except json.JSONDecodeError: continue
-
-            # Se for mensagem de chat, salva no arquivo
-            if 'from' in msg_decoded:
-                remetente = msg_decoded.get('from')
-                conteudo = msg_decoded.get('data')
-                try:
-                    with open(f"{NOME_USUARIO}_messages.txt", "a", encoding="utf-8") as f:
-                        f.write(f"De: {remetente}\nMensagem: {conteudo}\n" + "-" * 40 + "\n")
-                except Exception:
-                    pass
-        except Exception:
-            break
 
 def clear_terminal():
     subprocess.run(["cls" if os.name == 'nt' else "clear"], shell=True)  #'nt' for Windows, 'posix' is for Linux/macOS
 
 def main():
-    IP_PROCESSAMENTO = '127.0.0.1'
+    # IP do Servidor
+    IP_PROCESSAMENTO = 'xxx.xxx.x.xx'
     PORTA_PROCESSAMENTO = 65432
     STATUS_USUARIO = 1
     NOME_USUARIO = input("Digite seu nome de usuário: ")
     msg_retorno = ''
 
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.connect((IP_PROCESSAMENTO, PORTA_PROCESSAMENTO))
-        msg = {"operation": 0, "username": NOME_USUARIO}   #Apenas para informar o nome do usuário ao servidor de processamento
-        msg_json = json.dumps(msg)  #Convert to JSON string
-        s.sendall(f"{msg_json}".encode('utf-8'))
-        resultado = s.recv(4096).decode('utf-8')   #Essa resposta deve conter a confirmação de conexão e o status inicial do usuário
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((IP_PROCESSAMENTO, PORTA_PROCESSAMENTO))
+            msg = {"operation": 0, "username": NOME_USUARIO}   #Apenas para informar o nome do usuário ao servidor de processamento
+            msg_json = json.dumps(msg)  #Convert to JSON string
+            s.sendall(f"{msg_json}".encode('utf-8'))
+            resultado = s.recv(4096).decode('utf-8')   #Essa resposta deve conter a confirmação de conexão e o status inicial do usuário
+            
         msg_retorno += f"Conectado ao servidor de processamento!\n{resultado}"
-        
-        # Cria thread para escutar mensagens chegando
-        thread_escuta = threading.Thread(target=escuta_mensagens, args=(s, NOME_USUARIO), daemon=True)
-        thread_escuta.start()
     except Exception as e:
         print(f"Erro ao conectar ao servidor de processamento: {e}")
         return
@@ -79,14 +53,15 @@ def main():
             
         elif op == 2:  #Se quiser começar uma conversa, vai precisar ver lista de usuarios ativos
             try:
-                msg = {"operation": -1, "username": NOME_USUARIO}   #Apenas para requisitar a lista e usuários ativos ao servidor
-                msg_json = json.dumps(msg)  #Convert to JSON string
-                s.sendall(f"{msg_json}".encode('utf-8'))
-                
-                resultado = s.recv(4096).decode('utf-8')   #Essa resposta deve conter a lista de usuários ativos
-                id_user = input(f"{resultado}\nInforme o usuário para iniciar a conversa: ")
-                data = input(f"Agora digite a mensagem: ")
-                op = 2  # Define operação como 2 para enviar mensagem
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.connect((IP_PROCESSAMENTO, PORTA_PROCESSAMENTO))
+                    msg = {"operation": -1, "username": NOME_USUARIO}   #Apenas para requisitar a lista e usuários ativos ao servidor
+                    msg_json = json.dumps(msg)  #Convert to JSON string
+                    s.sendall(f"{msg_json}".encode('utf-8'))
+                    
+                    resultado = s.recv(4096).decode('utf-8')   #Essa resposta deve conter a lista de usuários ativos
+                    id_user = input(f"{resultado}\nDigite o identificador de um usuário para iniciar a conversa: ")
+                    data = input(f"Agora digite a mensagem: ")
             except Exception as e:
                 msg_retorno += f"Erro ao contactar servidor de processamento: {e}"
         
@@ -98,26 +73,23 @@ def main():
                 msg_retorno += f"Erro ao ler mensagens recebidas: {e}"
             continue  #Não precisa enviar nada ao servidor de processamento, só ler o arquivo local e mostrar para o usuário
 
-        if op == 3:  # Encerrar
-            msg = {"operation": 3, "username": NOME_USUARIO}
-            msg_json = json.dumps(msg)
-            try:
-                s.sendall(f"{msg_json}".encode('utf-8'))
-            except:
-                pass
-            s.close()
-            break
-        
         msg_data = {"to": id_user, "data": data}
         msg_data_json = json.dumps(msg_data)  #Convert to JSON string
         msg = {"operation": op, "username": NOME_USUARIO, "status": status, "body": msg_data_json}
         msg_json = json.dumps(msg)  #Convert to JSON string
+        msg_retorno += f"Mensagem enviada (em JSON): {msg_json}\n"
 
         try:
-            s.sendall(f"{msg_json}".encode('utf-8'))
-            resultado = s.recv(4096).decode('utf-8')
-            msg_retorno += resultado
-            STATUS_USUARIO = 1 if status == 'Ativo' else 0
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.connect((IP_PROCESSAMENTO, PORTA_PROCESSAMENTO))
+                #s.sendall(f"{arquivo};{palavra}".encode('utf-8'))
+                s.sendall(f"{msg_json}".encode('utf-8'))
+
+                resultado = s.recv(4096).decode('utf-8')
+                msg_retorno += resultado
+                
+                if op == 3: break
+
         except Exception as e:
             msg_retorno += f"Erro ao contactar servidor de processamento: {e}"
     
