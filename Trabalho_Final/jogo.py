@@ -3,7 +3,7 @@ import threading
 import time
 import random
 import sys
-import queue # [NOVO] Fila para resolver o bloqueio do teclado
+import queue 
 
 # ==============================================================================
 # CONFIGURAÇÕES GLOBAIS DA REDE
@@ -20,6 +20,9 @@ PARES_DE_PALAVRAS = [
     ("Avião", "Helicóptero")
 ]
 
+# Variável Global de Persistência (O Cliente faz backup do seu estado)
+MEUS_PONTOS_GLOBAIS = 0
+
 # ==============================================================================
 # CLASSE DO SERVIDOR (O "CÉREBRO") -> Módulo 3: Servidor Stateful e Concorrente
 # ==============================================================================
@@ -27,13 +30,15 @@ class ServidorCerebro:
     def __init__(self):
         self.jogadores = {}
         self.estado_jogo = 'LOBBY' 
+        self.rodada_encerrada = False
+        self.estado_lock = threading.RLock()
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((HOST, PORTA_JOGO))
 
     def iniciar(self):
         self.server_socket.listen()
-        print(f"👑 [BULLY] Assumindo o papel de Cérebro na porta {PORTA_JOGO}!")
+        print(f"👑 [SISTEMA] Eleição concluída! Cérebro ativo na porta {PORTA_JOGO}.")
         
         while True:
             try:
@@ -48,27 +53,29 @@ class ServidorCerebro:
             if msg_inicial.startswith("JOIN"):
                 partes = msg_inicial.split("|")
                 nome = partes[1].split(":", 1)[1]
-                
-                # [CORREÇÃO] O Cérebro é SEMPRE o Host. A flag vem do próprio cliente no JOIN.
                 is_host = (partes[2].split(":", 1)[1] == "True")
                 
-                # [CORREÇÃO] Rejeita e encerra imediatamente se não estiver no Lobby
+                # [MÓDULO 3] RECUPERAÇÃO DE ESTADO DISTRIBUÍDO: Lê os pontos do cliente
+                pontos_recuperados = int(partes[3].split(":", 1)[1])
+                
                 if self.estado_jogo != 'LOBBY':
                     conn.send("REJECT|MSG:Partida em andamento! Acesso negado.".encode('utf-8'))
                     conn.close()
                     return 
 
+                # Instancia o jogador no servidor com os pontos que ele já tinha
                 self.jogadores[conn] = {
                     'nome': nome, 'papel': '', 'palavra': '', 
                     'dica': '', 'quer_votar': False, 'voto': '',
-                    'pontos': 0, 'is_host': is_host
+                    'pontos': pontos_recuperados, 
+                    'is_host': is_host
                 }
                 
                 self.enviar_multicast(f"SYS|MSG:{nome} entrou! (Total: {len(self.jogadores)})")
                 
                 if is_host:
                     time.sleep(0.1)
-                    conn.send("SYS|MSG:Você é o HOST! Digite /start para iniciar.".encode('utf-8'))
+                    conn.send("SYS|MSG:Você é o HOST! Digite /start para iniciar a rodada.".encode('utf-8'))
 
             while True:
                 msg = conn.recv(BUFFER).decode('utf-8').strip()
@@ -81,7 +88,7 @@ class ServidorCerebro:
                         if self.jogadores[conn]['is_host']:
                             self.iniciar_partida()
                         else:
-                            conn.send("SYS|MSG:Apenas o HOST pode dar /start.".encode('utf-8'))
+                            conn.send("SYS|MSG:Acesso negado. Somente o Host pode dar /start.".encode('utf-8'))
                     
                     elif msg == "REQ_SCORE|MSG:null":
                         placar_msg = "\\n📊 --- PLACAR ATUAL ---"
@@ -91,8 +98,20 @@ class ServidorCerebro:
                         conn.send(f"SYS|MSG:{placar_msg}".encode('utf-8'))
                         
                     elif msg.startswith("CHAT_MSG"):
-                        texto = msg.split("|")[2].split(":", 1)[1]
-                        self.enviar_multicast(f"CHAT|FROM:{nome_remetente}|VT:NULL|MSG:{texto}")
+                        # [CORREÇÃO] Se o cliente mandou um comando tipo /votar no lobby,
+                        # ele vem em 2 partes. Se for chat normal, vem em 3 partes (com o VT).
+                        partes = msg.split("|")
+                        if len(partes) >= 3:
+                            texto = partes[2].split(":", 1)[1]
+                        else:
+                            # Se for o /votar no lobby, extrai da posição 1
+                            texto = partes[1].split(":", 1)[1]
+                        
+                        # Avisa que esse comando não tem efeito no Lobby ou repassa o texto normal
+                        if texto == "/votar":
+                            conn.send("SYS|MSG:O comando /votar só tem efeito durante a fase de chat.".encode('utf-8'))
+                        else:
+                            self.enviar_multicast(f"CHAT|FROM:{nome_remetente}|VT:NULL|MSG:{texto}")
 
                 elif self.estado_jogo == 'DICAS':
                     if msg.startswith("TIP"):
@@ -101,11 +120,14 @@ class ServidorCerebro:
                             self.jogadores[conn]['dica'] = dica 
                             self.enviar_multicast(f"SYS|MSG:{nome_remetente} enviou sua dica!")
                             self.checar_todas_as_dicas()
+                        else:
+                            conn.send("SYS|MSG:Você já enviou sua dica!".encode('utf-8'))
                     else:
                         conn.send("SYS|MSG:Digite /dica [palavra] para prosseguir.".encode('utf-8'))
 
                 elif self.estado_jogo == 'CHAT':
                     if self.jogadores[conn]['quer_votar']:
+                        conn.send("SYS|MSG:Aguarde os outros terminarem.".encode('utf-8'))
                         continue 
                         
                     if msg == "CHAT_MSG|MSG:/votar":
@@ -130,13 +152,15 @@ class ServidorCerebro:
                             lista_nomes = [j['nome'].lower() for j in self.jogadores.values()]
                             if voto_alvo.lower() in lista_nomes:
                                 self.jogadores[conn]['voto'] = voto_alvo
-                                self.enviar_multicast(f"SYS|MSG:{nome_remetente} votou oculto!")
+                                self.enviar_multicast(f"SYS|MSG:{nome_remetente} votou!")
                                 time.sleep(0.2) 
                                 self.checar_todos_votos()
                             else:
-                                conn.send(f"SYS|MSG:Voto inválido! O jogador não existe.".encode('utf-8'))
+                                conn.send(f"SYS|MSG:Voto inválido! Nome não encontrado.".encode('utf-8'))
+                        else:
+                            conn.send("SYS|MSG:Você já votou!".encode('utf-8'))
                     else:
-                        conn.send("SYS|MSG:Digite /voto [nome] para encerrar.".encode('utf-8'))
+                        conn.send("SYS|MSG:Discussão fechada! Digite /voto [nome].".encode('utf-8'))
 
         except Exception as e:
             pass
@@ -158,57 +182,77 @@ class ServidorCerebro:
                 pass
 
     def iniciar_partida(self):
-        if len(self.jogadores) < 3: 
-            self.enviar_multicast("SYS|MSG:Mínimo de 3 jogadores necessários!")
-            return
-            
-        self.estado_jogo = 'DICAS'
-        p_inoc, p_inf = random.choice(PARES_DE_PALAVRAS)
-        conexoes = list(self.jogadores.keys())
-        inf_conn = random.choice(conexoes)
+        with self.estado_lock:
+            if len(self.jogadores) < 3: 
+                self.enviar_multicast("SYS|MSG:Mínimo de 3 jogadores necessários para iniciar!")
+                return
+                
+            self.estado_jogo = 'DICAS'
+            self.rodada_encerrada = False
+            p_inoc, p_inf = random.choice(PARES_DE_PALAVRAS)
+            conexoes = list(self.jogadores.keys())
+            inf_conn = random.choice(conexoes)
 
-        for conn in conexoes:
-            self.jogadores[conn]['dica'] = ''
-            self.jogadores[conn]['quer_votar'] = False
-            self.jogadores[conn]['voto'] = ''
-            
-            if conn == inf_conn:
-                self.jogadores[conn]['papel'] = 'INFILTRADO'
-                self.jogadores[conn]['palavra'] = p_inf
-            else:
-                self.jogadores[conn]['papel'] = 'INOCENTE'
-                self.jogadores[conn]['palavra'] = p_inoc
-            
-            msg = f"ROLE|ROLE:{self.jogadores[conn]['papel']}|WORD:{self.jogadores[conn]['palavra']}"
-            conn.send(msg.encode('utf-8'))
+            for conn in conexoes:
+                self.jogadores[conn]['dica'] = ''
+                self.jogadores[conn]['quer_votar'] = False
+                self.jogadores[conn]['voto'] = ''
+                
+                if conn == inf_conn:
+                    self.jogadores[conn]['papel'] = 'INFILTRADO'
+                    self.jogadores[conn]['palavra'] = p_inf
+                else:
+                    self.jogadores[conn]['papel'] = 'INOCENTE'
+                    self.jogadores[conn]['palavra'] = p_inoc
+                
+                msg = f"ROLE|ROLE:{self.jogadores[conn]['papel']}|WORD:{self.jogadores[conn]['palavra']}"
+                conn.send(msg.encode('utf-8'))
 
         time.sleep(0.5)
-        self.enviar_multicast("TIP_REQ|MSG:A rodada começou! Digite /dica [palavra]")
+        self.enviar_multicast("TIP_REQ|MSG:Rodada começou! Digite /dica [palavra]")
 
     def checar_todas_as_dicas(self):
-        if all(j['dica'] != '' for j in self.jogadores.values()):
+        with self.estado_lock:
+            if self.estado_jogo != 'DICAS' or self.rodada_encerrada:
+                return
+            if not all(j['dica'] != '' for j in self.jogadores.values()):
+                return
             lista_dicas = "&&".join([f"{j['nome']} disse: '{j['dica']}'" for j in self.jogadores.values()])
-            self.enviar_multicast(f"ALL_TIPS|LIST:{lista_dicas}")
-            time.sleep(0.5)
             self.estado_jogo = 'CHAT'
-            self.enviar_multicast("CHAT_START|MSG:[CHAT ABERTO] Descubram o Infiltrado! Digite /votar para pular.")
+
+        self.enviar_multicast(f"ALL_TIPS|LIST:{lista_dicas}")
+        time.sleep(0.5)
+        self.enviar_multicast("CHAT_START|MSG:[CHAT ABERTO] Quem é o Infiltrado? Digite /votar para pular o chat.")
 
     def iniciar_votacao(self):
-        self.estado_jogo = 'VOTACAO'
+        with self.estado_lock:
+            if self.estado_jogo != 'CHAT' or self.rodada_encerrada:
+                return
+            self.estado_jogo = 'VOTACAO'
         self.enviar_multicast("CHAT_END|MSG:[VOTAÇÃO] Chat bloqueado! Digite /voto [nome].")
 
+    def __get_infiltrador_name(self):
+        for j in self.jogadores.values():
+            if j['papel'] == 'INFILTRADO':
+                return j['nome']
+        return "Desconhecido"
+
     def checar_todos_votos(self):
-        if all(j['voto'] != '' for j in self.jogadores.values()):
+        with self.estado_lock:
+            if self.estado_jogo != 'VOTACAO' or self.rodada_encerrada:
+                return
+            if not all(j['voto'] != '' for j in self.jogadores.values()):
+                return
+
+            self.rodada_encerrada = True
             contagem = {}
             for j in self.jogadores.values():
                 voto = j['voto'].lower()
                 contagem[voto] = contagem.get(voto, 0) + 1
                 
-            # [CORREÇÃO] Lógica de Empate: Verifica se há mais de um jogador com o máximo de votos
             max_votos = max(contagem.values())
             mais_votados = [nome for nome, qtd in contagem.items() if qtd == max_votos]
-            
-            nome_infiltrado = [j['nome'] for j in self.jogadores.values() if j['papel'] == 'INFILTRADO'][0]
+            nome_infiltrado = self.__get_infiltrador_name()
             
             if len(mais_votados) > 1:
                 resultado = f"Deu EMPATE! Sem consenso, o INFILTRADO ({nome_infiltrado}) escapou e ganhou 2 pontos!"
@@ -218,7 +262,7 @@ class ServidorCerebro:
             else:
                 mais_votado = mais_votados[0]
                 if mais_votado.lower() == nome_infiltrado.lower():
-                    resultado = f"INOCENTES venceram! Eliminaram o Infiltrado ({nome_infiltrado})."
+                    resultado = f"Os INOCENTES acertaram e eliminaram o Infiltrado ({nome_infiltrado})."
                     for conn in self.jogadores:
                         if self.jogadores[conn]['papel'] == 'INOCENTE':
                             self.jogadores[conn]['pontos'] += 1
@@ -228,47 +272,46 @@ class ServidorCerebro:
                         if self.jogadores[conn]['papel'] == 'INFILTRADO':
                             self.jogadores[conn]['pontos'] += 2 
 
-            self.enviar_multicast(f"ROUND_END|RESULT:{resultado}")
-            
+            pontos_atualizados = [(conn_jogador, dados['pontos']) for conn_jogador, dados in self.jogadores.items()]
             placar_msg = "\\n📊 --- TABELA DE PONTUAÇÃO ---"
             for j in self.jogadores.values():
                 placar_msg += f"\\n   🔹 {j['nome']}: {j['pontos']} pts"
             placar_msg += "\\n-------------------------------"
-            
-            time.sleep(0.5)
-            self.enviar_multicast(f"SYS|MSG:{placar_msg}")
-            
             self.estado_jogo = 'LOBBY'
-            self.enviar_multicast("SYS|MSG:Retornamos ao Lobby. O HOST pode dar /start.")
+
+        # Entrega fora do lock para não prender outras mensagens durante I/O de rede
+        for conn_jogador, pontos in pontos_atualizados:
+            try: 
+                conn_jogador.send(f"SCORE_UPDATE|PTS:{pontos}".encode('utf-8'))
+            except: pass
+                
+        time.sleep(0.3) # Timeout de segurança TCP
+        self.enviar_multicast(f"ROUND_END|RESULT:{resultado}")
+        
+        time.sleep(0.5)
+        self.enviar_multicast(f"SYS|MSG:{placar_msg}")
+        self.enviar_multicast("SYS|MSG:Lobby Aberto! O Host pode dar /start novamente.")
 
 
 # ==============================================================================
 # CLASSE DO CLIENTE E SINCRONIZAÇÃO CAUSAL (MÓDULO 6)
 # ==============================================================================
 class ClienteJogador:
-    # ==============================================================================
-    # CLASSE DO CLIENTE E SINCRONIZAÇÃO CAUSAL (MÓDULO 6)
-    # ==============================================================================
-    class ClienteJogador:
-        # [CORREÇÃO] Agora o cliente recebe a fila_global do __main__
-        def __init__(self, fila_global): 
-            self.socket = None
-            self.conectado = False
-            self.meu_nome = ""
-            self.is_cerebro = False
-            self.vt = {} 
-            self.buffer_msgs = []
-            self.rejeitado = False
-            
-            self.fila_inputs = fila_global # Usa a fila única do sistema
+    def __init__(self, fila_global): 
+        self.socket = None
+        self.conectado = False
+        self.meu_nome = ""
+        self.vt = {} 
+        self.buffer_msgs = []
+        
+        self.rejeitado = False
+        self.queda_silenciosa = False
+        self.fila_inputs = fila_global 
 
     def conectar(self, nome, is_cerebro):
         self.meu_nome = nome
-        self.is_cerebro = is_cerebro
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        
-        # Limpa o lixo que o usuário possa ter digitado enquanto o Cérebro estava off
-        self.fila_inputs.queue.clear()
+        self.fila_inputs.queue.clear() 
         
         tentativas = 0
         while tentativas < 5:
@@ -281,7 +324,7 @@ class ClienteJogador:
                 tentativas += 1
 
         if not self.conectado:
-            print("[!] Falha. Não encontramos o Servidor do Cérebro ativo.")
+            print("[!] Não encontramos o Cérebro ativo na rede.")
             return
 
         thread_ouvir = threading.Thread(target=self.ouvir_servidor)
@@ -289,21 +332,27 @@ class ClienteJogador:
         thread_ouvir.start()
         
         time.sleep(0.1)
-        # [CORREÇÃO] Passamos a flag IS_CEREBRO no momento da conexão
-        self.socket.send(f"JOIN|NAME:{nome}|CEREBRO:{is_cerebro}".encode('utf-8'))
-        
+        # [MÓDULO 3] Backup Local: Envia para o Cérebro a quantidade de pontos que possui globalmente
+        global MEUS_PONTOS_GLOBAIS
+        self.socket.send(f"JOIN|NAME:{nome}|CEREBRO:{is_cerebro}|PTS:{MEUS_PONTOS_GLOBAIS}".encode('utf-8'))
         self.processar_inputs()
 
     def ouvir_servidor(self):
+        self.socket.settimeout(2.0)
         while self.conectado:
             try:
                 msg = self.socket.recv(BUFFER).decode('utf-8')
                 if not msg: break
                 
-                # [CORREÇÃO] Tratamento de Acesso Negado para quem chega atrasado
+                # Desempacota atualizações silenciosas do Servidor
+                if msg.startswith("SCORE_UPDATE"):
+                    global MEUS_PONTOS_GLOBAIS
+                    MEUS_PONTOS_GLOBAIS = int(msg.split("|")[1].split(":", 1)[1])
+                    continue
+                
                 if msg.startswith("REJECT"):
                     texto = msg.split("|")[1].split(":", 1)[1]
-                    print(f"\n❌ [SISTEMA] {texto}")
+                    print(f"\n❌ [ACESSO NEGADO] {texto}")
                     self.conectado = False
                     self.rejeitado = True
                     break
@@ -326,7 +375,7 @@ class ClienteJogador:
                 elif msg.startswith("ROLE"):
                     papel = msg.split("|")[1].split(":", 1)[1]
                     palavra = msg.split("|")[2].split(":", 1)[1]
-                    print(f"\n🕵️ SEU PAPEL: {papel} | 🔑 PALAVRA: {palavra}")
+                    print(f"\n🕵️ SEU PAPEL: {papel} | 🔑 SUA PALAVRA: {palavra}")
                     
                 elif msg.startswith("CHAT_START"):
                     self.vt.clear() 
@@ -342,13 +391,19 @@ class ClienteJogador:
                         print(f"   • {d}")
                         
                 elif msg.startswith("ROUND_END"):
-                    print(f"\n🏁 FIM DA RODADA! {msg.split('|')[1].split(':', 1)[1]}")
-            except:
-                break
+                    print(f"\n🏁 {msg.split('|')[1].split(':', 1)[1]}")
+                    
+            except socket.timeout:
+                continue 
+            except Exception as e:
+                break 
         
         if not self.rejeitado:
-            print("\n🚨 [ALERTA DE FALHA] O Cérebro caiu e a conexão foi perdida!")
-            print(">>> Reconfigurando a rede automaticamente via Algoritmo Bully...")
+            print("\n🚨 [ALERTA DE FALHA] O Cérebro caiu ou reiniciou!")
+            print(">>> Reconfigurando o barramento via Algoritmo Bully em 3 segundos...")
+            self.queda_silenciosa = True
+            time.sleep(3) 
+            
         self.conectado = False
 
     def processar_entrega_causal(self, remetente, vt_str, texto):
@@ -386,13 +441,11 @@ class ClienteJogador:
                     break 
 
     def processar_inputs(self):
-        # [NOVO] O loop principal do cliente não trava mais no input()
-        # Ele consome a Fila com um Timeout, permitindo checar se a rede caiu!
         while self.conectado:
             try:
                 texto = self.fila_inputs.get(timeout=0.5)
             except queue.Empty:
-                continue # A cada meio segundo ele volta e checa o `while self.conectado`
+                continue 
             
             if texto.startswith("/dica "): pacote = f"TIP|WORD:{texto.replace('/dica ', '', 1).strip()}"
             elif texto.startswith("/voto "): pacote = f"VOTE|TARGET:{texto.replace('/voto ', '', 1).strip()}"
@@ -410,7 +463,7 @@ class ClienteJogador:
 
 
 # ==============================================================================
-# [MÓDULO 6 - AULA 2] ALGORITMO BULLY NÃO-PREEMPTIVO E REELEIÇÃO
+# ALGORITMO BULLY NÃO-PREEMPTIVO
 # ==============================================================================
 def responder_pings_bully(meu_socket):
     while True:
@@ -430,7 +483,7 @@ def executar_eleicao_bully(meu_id):
     except:
         pass 
 
-    print(f"🔍 [BULLY] Meu ID é: {meu_id}. Verificando nós com IDs maiores...")
+    print(f"🔍 [BULLY] Identidade local {meu_id}. Varrendo IDs maiores...")
     alguem_maior_vivo = False
     
     for porta_alvo in range(meu_id + 1, PORTAS_BULLY[-1] + 1):
@@ -440,18 +493,26 @@ def executar_eleicao_bully(meu_id):
             s.connect((HOST, porta_alvo))
             alguem_maior_vivo = True
             s.close()
-            print(f"   -> O nó {porta_alvo} está vivo. Recuando da eleição...")
             break 
         except:
             pass 
             
     if not alguem_maior_vivo:
-        print(f"🎉 [BULLY] Nenhum ID maior respondeu. Fui promovido a LÍDER!")
         return True 
     else:
-        print(f"⏳ [BULLY] Aguardando o nó superior iniciar o Cérebro...")
+        print(f"⏳ [BULLY] Nó superior ativo. Aguardando servidor...")
         time.sleep(2) 
         return False
+
+# ==============================================================================
+# LEITOR GLOBAL DE TECLADO
+# ==============================================================================
+def capturar_teclado(fila):
+    while True:
+        try:
+            texto = sys.stdin.readline().strip()
+            if texto: fila.put(texto)
+        except: pass
 
 # ==============================================================================
 # INÍCIO DO PROGRAMA (MAIN)
@@ -479,23 +540,35 @@ if __name__ == "__main__":
             continue
             
     if meu_id == 0:
-        print("Limite de 5 jogadores atingido na rede local.")
+        print("Limite máximo de 5 jogadores locais atingido.")
         sys.exit()
 
     threading.Thread(target=responder_pings_bully, args=(meu_socket_bully,), daemon=True).start()
 
+    fila_de_teclado = queue.Queue()
+    threading.Thread(target=capturar_teclado, args=(fila_de_teclado,), daemon=True).start()
+
+    servidor_ativo = False
+    
     while True:
         sou_lider = executar_eleicao_bully(meu_id)
         
-        if sou_lider:
+        if sou_lider and not servidor_ativo:
             cerebro = ServidorCerebro()
-            t_servidor = threading.Thread(target=cerebro.iniciar, daemon=True)
-            t_servidor.start()
-            time.sleep(0.5) 
+            threading.Thread(target=cerebro.iniciar, daemon=True).start()
+            servidor_ativo = True
+            time.sleep(1) 
             
-        jogador = ClienteJogador()
+        jogador = ClienteJogador(fila_de_teclado)
         jogador.conectar(nome_jogador, is_cerebro=sou_lider)
         
-        # [CORREÇÃO] Se o cliente foi rejeitado por entrar tarde, sai do loop e fecha o jogo
         if jogador.rejeitado:
             sys.exit()
+            
+        if jogador.queda_silenciosa:
+            try:
+                jogador.socket.close()
+            except:
+                pass
+            time.sleep(1) 
+            continue
