@@ -25,7 +25,6 @@ if __name__ == "__main__":
     modo_rede = input("Rodar em rede local com eleição distribuída? [s/n]: ").strip().lower()
     usar_lan = (modo_rede == 's' or modo_rede == 'sim')
     host_jogo = HOST_LOCAL
-    servidor_lan = False
     meu_ip_lan = HOST_LOCAL
     ips_participantes_lan = []
 
@@ -36,7 +35,10 @@ if __name__ == "__main__":
             meu_ip_lan = input("IP desta máquina na rede local: ").strip()
 
         ips_descobertos, ips_lock = iniciar_discovery_lan(meu_ip_lan)
-        print("Descoberta de jogadores iniciada em segundo plano (os jogadores serão encontrados continuamente).")
+        print("Buscando jogadores na rede (3 segundos)...")
+        time.sleep(3)  #Aguarda a discovery coletar broadcasts de máquinas já ativas antes da primeira eleição
+        with ips_lock:
+            print(f"Jogadores encontrados: {', '.join(sorted(ips_descobertos))}")
     
     meu_id = 0
     meu_socket_bully = None

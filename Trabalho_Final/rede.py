@@ -139,16 +139,19 @@ def iniciar_discovery_lan(meu_ip):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(('', PORTA_DISCOVERY))
-        sock.settimeout(0.5)
 
         while True:
             sock.sendto(meu_ip.encode(), ('255.255.255.255', PORTA_DISCOVERY))
+            #Drena todos os pacotes disponíveis no buffer de recepção:
+            sock.settimeout(0.5)
             try:
-                dados, _ = sock.recvfrom(256)
-                ip = dados.decode().strip()
-                if ip:
-                    with ips_lock:
-                        ips_encontrados.add(ip)
+                while True:
+                    dados, _ = sock.recvfrom(256)
+                    ip = dados.decode().strip()
+                    if ip:
+                        with ips_lock:
+                            ips_encontrados.add(ip)
+                    sock.settimeout(0.05)  #Leituras seguintes usam timeout curto para drenar rápido
             except socket.timeout:
                 pass
 
