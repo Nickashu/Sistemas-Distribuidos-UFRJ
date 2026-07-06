@@ -1,11 +1,13 @@
 import ipaddress
 import socket
+import threading
 import time
 
 HOST_LOCAL = '127.0.0.1'
 HOST_LAN = '0.0.0.0'
 PORTA_JOGO = 5555
 PORTA_BULLY_LAN = 5556
+PORTA_DISCOVERY = 5557
 PORTAS_BULLY = [5001, 5002, 5003, 5004, 5005]
 BUFFER = 1024
 
@@ -112,6 +114,33 @@ def normalizar_lista_ips(texto_ips):
 
     ips_unicos.sort(key=lambda valor: ipaddress.ip_address(valor))  #Ordena a lista de IPs em ordem crescente
     return ips_unicos
+
+
+def iniciar_discovery_lan(meu_ip):
+    #Inicia uma thread contínua que anuncia presença e coleta IPs de outros jogadores via UDP broadcast:
+    ips_encontrados = {meu_ip}
+    ips_lock = threading.Lock()
+
+    def _loop_discovery():
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(('', PORTA_DISCOVERY))
+        sock.settimeout(0.5)
+
+        while True:
+            sock.sendto(meu_ip.encode(), ('255.255.255.255', PORTA_DISCOVERY))
+            try:
+                dados, _ = sock.recvfrom(256)
+                ip = dados.decode().strip()
+                if ip:
+                    with ips_lock:
+                        ips_encontrados.add(ip)
+            except socket.timeout:
+                pass
+
+    threading.Thread(target=_loop_discovery, daemon=True).start()
+    return ips_encontrados, ips_lock
 
 
 def executar_eleicao_bully_lan(meu_ip, ips_participantes):

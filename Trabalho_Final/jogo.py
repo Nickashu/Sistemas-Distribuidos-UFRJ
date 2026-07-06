@@ -9,18 +9,18 @@ from rede import (
     HOST_LOCAL,
     PORTA_BULLY_LAN,
     PORTAS_BULLY,
+    iniciar_discovery_lan,
     executar_eleicao_bully,
     executar_eleicao_bully_lan,
-    normalizar_lista_ips,
     responder_pings_bully,
 )
 
 #INÍCIO DO PROGRAMA
 if __name__ == "__main__":
     print("--- PALAVRA INFILTRADA ---")
-    nome_jogador = input("Escolha seu apelido: ").strip()
+    nome_jogador = input("Escolha seu apelido: ").strip().replace("|", "")
     while not nome_jogador:
-        nome_jogador = input("Escolha um apelido: ").strip()
+        nome_jogador = input("Escolha um apelido: ").strip().replace("|", "")
 
     modo_rede = input("Rodar em rede local com eleição distribuída? [s/n]: ").strip().lower()
     usar_lan = (modo_rede == 's' or modo_rede == 'sim')
@@ -30,19 +30,13 @@ if __name__ == "__main__":
     ips_participantes_lan = []
 
     if usar_lan:
-        #No modo LAN, cada máquina informa seu IP e a lista completa de participantes:
+        #No modo LAN, cada máquina informa seu IP e os outros são descobertos automaticamente em segundo plano:
         meu_ip_lan = input("IP desta máquina na rede local: ").strip()
         while not meu_ip_lan:
             meu_ip_lan = input("IP desta máquina na rede local: ").strip()
 
-        ips_texto = input("IPs participantes, separados por vírgula, incluindo o seu: ").strip()
-        while not ips_texto:
-            ips_texto = input("IPs participantes, separados por vírgula, incluindo o seu: ").strip()
-
-        ips_participantes_lan = normalizar_lista_ips(ips_texto)
-        if meu_ip_lan not in ips_participantes_lan:
-            ips_participantes_lan.append(meu_ip_lan)
-            ips_participantes_lan = normalizar_lista_ips(",".join(ips_participantes_lan))
+        ips_descobertos, ips_lock = iniciar_discovery_lan(meu_ip_lan)
+        print("Descoberta de jogadores iniciada em segundo plano (os jogadores serão encontrados continuamente).")
     
     meu_id = 0
     meu_socket_bully = None
@@ -84,6 +78,9 @@ if __name__ == "__main__":
     while True:
         #Fazendo a eleição do líder (cérebro) do jogo, em LAN ou local:
         if usar_lan:
+            #Tira um snapshot atualizado dos jogadores descobertos na LAN:
+            with ips_lock:
+                ips_participantes_lan = list(ips_descobertos)
             #Descobre quem é o líder da rodada entre as máquinas da rede (se tiver um):
             host_jogo = executar_eleicao_bully_lan(meu_ip_lan, ips_participantes_lan)
             sou_lider = (host_jogo == meu_ip_lan)
