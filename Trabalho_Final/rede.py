@@ -74,7 +74,7 @@ def executar_eleicao_bully(meu_id, host_jogo):
     except:
         pass
 
-    print(f"🔍 [BULLY] Identidade local {meu_id}. Varrendo IDs maiores...")
+    print(f"[BULLY] Identidade local {meu_id}. Varrendo IDs maiores...")
     alguem_maior_vivo = False
 
     for porta_alvo in range(meu_id + 1, PORTAS_BULLY[-1] + 1):
@@ -91,7 +91,7 @@ def executar_eleicao_bully(meu_id, host_jogo):
     if not alguem_maior_vivo:
         return True   #Nesse caso, o processo atual é o maior ID vivo e assume o papel de líder
     else:
-        print(f"⏳ [BULLY] Nó superior ativo. Aguardando servidor...")
+        print(f"[BULLY] Nó superior ativo. Aguardando servidor...")
         time.sleep(2)
         return False   #Nesse caso, o processo atual aguarda que o nó superior assuma o papel de líder e entre como cliente
 

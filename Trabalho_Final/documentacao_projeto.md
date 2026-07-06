@@ -98,3 +98,41 @@ Para garantir que mensagens de chat cheguem em ordem de causa e efeito, cada cli
 3.  O novo líder sobe o `ServidorCerebro` em sua máquina.
 4.  Os clientes conectam-se ao novo servidor e enviam um pacote especial `JOIN` contendo sua pontuação acumulada que estava guardada localmente (`MEUS_PONTOS_GLOBAIS`).
 5.  O novo servidor reconstrói o placar em memória a partir dos dados consolidados dos clientes. O placar geral é preservado e a rodada reinicia no Lobby.
+
+
+
+## Lista de Mensagens do Protocolo de Aplicação
+
+JOIN|NAME:<n>|CEREBRO:<c>|PTS:<p>	Cliente ➔ Servidor	Enviada imediatamente após conectar para registrar o jogador e recuperar seus pontos.
+
+REJECT|MSG:<texto>	Servidor ➔ Cliente	Enviada se o jogador tenta entrar em um jogo que já iniciou (fora da fase de lobby).
+
+SYS|MSG:<texto>	Servidor ➔ Cliente	Mensagens informativas do sistema (ex: "Fulano entrou", tabelas de pontuação).
+
+ROLE|ROLE:<papel>|WORD:<palavra>	Servidor ➔ Cliente	Enviada privadamente no início da partida para dar a palavra e a função (Inocente/Infiltrado).
+
+TIP_REQ|MSG:<texto>	Servidor ➔ Cliente	Notificação multicast avisando que a fase de dicas começou.
+
+TIP|WORD:<dica>	Cliente ➔ Servidor	Enviada quando o jogador digita /dica [palavra].
+
+ALL_TIPS|LIST:<lista_dicas>	Servidor ➔ Cliente	Envia a lista compilada contendo a dica de todos os jogadores ativos.
+
+CHAT_START|MSG:<texto>	Servidor ➔ Cliente	Notificação multicast que limpa os vetores e avisa que o chat está aberto.
+
+CHAT_MSG|VT:<vetor>|MSG:<texto>	Cliente ➔ Servidor	Envia uma mensagem comum de chat contendo o vetor de timestamps para ordenação causal.
+
+CHAT_MSG|MSG:/start	Cliente ➔ Servidor	Comando enviado pelo Host para iniciar o jogo.
+
+CHAT_MSG|MSG:/votar	Cliente ➔ Servidor	Comando enviado pelo jogador que quer pular a fase de chat e ir para a votação.
+
+CHAT|FROM:<r>|VT:<vetor/NULL>|MSG:<texto>	Servidor ➔ Cliente	Retransmissão (multicast) do chat para que todos os clientes recebam a mensagem.
+
+CHAT_END|MSG:<texto>	Servidor ➔ Cliente	Notificação multicast que bloqueia o chat e avisa que a fase de votos começou.
+
+VOTE|TARGET:<nome>	Cliente ➔ Servidor	Enviada quando o jogador vota em alguém com /voto [nome].
+
+SCORE_UPDATE|PTS:<pontos>	Servidor ➔ Cliente	Enviada no fim da rodada para que o cliente atualize seu cache local de pontos.
+
+ROUND_END|RESULT:<texto>	Servidor ➔ Cliente	Notificação multicast contendo o veredito final da rodada.
+
+REQ_SCORE|MSG:null	Cliente ➔ Servidor	Enviada quando o jogador digita /placar.
