@@ -1,138 +1,150 @@
-# Manual e Documentação de Arquitetura: "A Palavra Infiltrada"
+# Documentação de Arquitetura de Sistemas Distribuídos: "A Palavra Infiltrada"
 
-Este documento serve como guia completo de engenharia e arquitetura para o projeto **A Palavra Infiltrada**, um jogo multiplayer distribuído de dedução social projetado para a disciplina de **Sistemas Distribuídos**.
-
----
-
-## 1. Visão Geral do Jogo
-
-O jogo é inspirado no clássico board game *Undercover*.
-*   **Os Inocentes**: A maioria dos jogadores recebe uma palavra secreta em comum (ex: "Praia").
-*   **O Infiltrado**: Um jogador sorteado secretamente recebe uma palavra muito semelhante, mas ligeiramente diferente (ex: "Piscina").
-*   **Objetivo**: Os jogadores devem enviar dicas de uma palavra, discutir via chat causal e votar para eliminar quem eles suspeitam ser o infiltrado. O infiltrado deve se passar por inocente e induzir o grupo ao erro.
+Este documento detalha as decisões arquiteturais, os protocolos de comunicação e os algoritmos distribuídos utilizados no desenvolvimento do jogo **Palavra Infiltrada**.
 
 ---
 
-## 2. Arquitetura do Sistema
+## 1. Estilos Arquiteturais (Híbrido: P2P e Cliente-Servidor)
 
-O sistema adota uma **Arquitetura Híbrida**:
-1.  **Fase Descentralizada (Peer-to-Peer - P2P)**: Quando os processos iniciam ou quando o servidor central cai, todos os nós são considerados iguais. Eles se comunicam de forma pareada para executar o **Algoritmo de Eleição Bully** e determinar quem assumirá o papel de coordenador.
-2.  **Fase Centralizada (Cliente-Servidor - C/S)**: Assim que um líder é eleito, ele inicializa o componente `ServidorCerebro` (Stateful Server) que gerencia o estado da partida, as rodadas, a contagem de votos e as pontuações. Os demais nós instanciam o `ClienteJogador` e conectam-se a ele.
+O sistema foi estruturado sobre um modelo arquitetural **híbrido**, que transita entre redes descentralizadas (Peer-to-Peer) e centralizadas (Cliente-Servidor) para resolver a coordenação e a tolerância a falhas:
 
-```mermaid
-graph TD
-    subgraph Inicialização / Eleição P2P
-        N1[Jogador 1] <-->|Bully TCP| N2[Jogador 2]
-        N2 <-->|Bully TCP| N3[Jogador 3]
-        N3 <-->|Bully TCP| N1
-    end
-    
-    subgraph Partida C/S (Líder Eleito)
-        Lider[Jogador Eleito / Cérebro]
-        C1[Cliente Jogador 1] -->|Conexão TCP Port 5555| Lider
-        C2[Cliente Jogador 2] -->|Conexão TCP Port 5555| Lider
-    end
+*   **Fase Descentralizada (Peer-to-Peer)**: Quando a partida inicia ou quando ocorre a queda do servidor principal, os nós operam de forma simétrica (P2P). Não há um ponto único de autoridade; todos os processos ativos coordenam-se de forma direta para rodar o **Algoritmo de Eleição Bully** e estabelecer o líder.
+*   **Fase Centralizada (Cliente-Servidor)**: Uma vez definido o líder, o estilo arquitetural migra para o modelo clássico **Cliente-Servidor com Estado (Stateful Server)**.
+    *   *Justificativa*: Gerenciar o estado global de uma partida (cofre de pontuações, palavra secreta de cada jogador, controle de turnos de envio de dicas, sincronismo de votos) de forma puramente descentralizada geraria um overhead excessivo de mensagens de consenso. Centralizar o estado temporariamente no nó **Cérebro** simplifica drasticamente a validação de regras de negócios e a ordenação de turnos.
+
+---
+
+## 2. Protocolos de Transporte e Comunicação
+
+O projeto adota decisões bem demarcadas nas camadas de transporte da pilha TCP/IP, utilizando sockets para finalidades distintas:
+
+### A. Camada de Transporte Confiável (Sockets TCP)
+Para o fluxo do jogo (Lobby, Dicas, Chat e Votação) e a eleição distribuída, o protocolo adotado é o **TCP (`socket.SOCK_STREAM`)**.
+*   *Justificativa*: A dinâmica de um jogo de dedução social exige entrega garantida e em ordem de pacotes. Se um pacote contendo um voto ou uma dica for perdido ou duplicado, a integridade da partida é destruída. O TCP garante controle de fluxo, retransmissão de pacotes perdidos e entrega ordenada no nível de transporte.
+
+### B. Camada de Transporte Não-Confiável (Sockets UDP com Broadcast)
+Para a fase de auto-descoberta dinâmica de jogadores na LAN, o protocolo adotado é o **UDP (`socket.SOCK_DGRAM`)**.
+*   *Justificativa*: Sockets UDP não possuem overhead de estabelecimento de conexão (handshake) e suportam **IP Broadcast (`255.255.255.255`)**. Isso permite que um processo anuncie seu IP para todas as máquinas da sub-rede local simultaneamente. A perda ocasional de um ping de descoberta é inofensiva, pois o envio é executado de forma contínua em segundo plano.
+
+### C. Modelos de Comunicação: Unicast, Multicast e Broadcast
+O sistema de comunicação do projeto faz uso explícito de três estratégias distintas de envio de dados na rede:
+1.  **Unicast (TCP)**: Comunicação um-para-um direta. Utilizado quando um cliente envia comandos ao servidor (ex: `/dica` e `/voto`) ou quando o servidor envia respostas privadas para conexões individuais (ex: `ROLE` com a palavra secreta ou `SCORE_UPDATE` com a pontuação privada).
+2.  **Multicast em Nível de Aplicação (TCP)**: Comunicação um-para-muitos. Utilizado para a distribuição de mensagens de chat causal, dicas compiladas (`ALL_TIPS`), travamento de fases (`CHAT_END`) e resultados de rodadas (`ROUND_END`). É implementado em estrela através do método `enviar_multicast` do `ServidorCerebro`, que itera sobre o conjunto de conexões ativas enviando a cópia dos dados.
+3.  **Broadcast IP (UDP)**: Comunicação um-para-todos na sub-rede. Utilizado no serviço de auto-descoberta na LAN. A thread em segundo plano envia pacotes UDP para o IP de broadcast limitado `255.255.255.255` na porta `5557`, permitindo que todas as máquinas na mesma rede física descubram as outras dinamicamente sem precisar de um servidor de registro ou digitação manual.
+
+### D. Protocolo de Aplicação Inventado e Enquadramento (Framing)
+O protocolo de aplicação opera em texto plano (UTF-8) com delimitadores lógicos:
+*   **Formato Geral**: `COMANDO|ATRIBUTO1:VALOR1|ATRIBUTO2:VALOR2`
+*   **Problema da Coalescência de Bytes do TCP**: Sockets TCP operam como fluxos de bytes contínuos (*byte-streams*) e não possuem limites de mensagens nativos. Se o servidor enviar duas mensagens seguidas rapidamente, o TCP pode agrupá-las no buffer, entregando-as juntas ao receptor (ex: `SCORE_UPDATE|...ROUND_END|...`), o que causa erros de parse.
+*   **Solução (Delimitação por Quebra de Linha)**: Cada mensagem enviada via helper `enviar_msg` termina estritamente com `\n`. O receptor utiliza a classe `LeitorSocket` para reter os dados em um buffer em memória e só expor strings inteiras quando um caractere `\n` é detectado.
+
+---
+
+## 3. Concorrência e Multitarefa (Threads)
+
+A implementação de concorrência foi estruturada de forma assíncrona usando threads de sistema operacional (`threading.Thread` no Python) tanto no cliente quanto no servidor:
+
+### A. Servidor Concorrente (Dispatcher-Worker)
+O `ServidorCerebro` utiliza um modelo de thread dispatcher com worker threads:
+1.  A thread dispatcher fica bloqueada no loop `accept()` aguardando novas conexões TCP na porta `5555`.
+2.  Ao aceitar uma conexão, ela despacha o socket para uma nova thread dedicada que executará o laço `tratar_cliente(conn, addr)`.
+3.  Isso impede que uma chamada de sistema bloqueante (como aguardar a dica ou o voto de um cliente lento) congele o servidor para os demais jogadores ativos.
+
+### B. Cliente Concorrente
+O `ClienteJogador` mantém três threads ativas simultaneamente:
+1.  **Thread Principal (Lógica/Interface)**: Fica bloqueada na fila local capturando o que o usuário digitou e transmitindo as mensagens/comandos formatados para o servidor.
+2.  **Thread de Leitura de Teclado**: Roda em loop eterno executando `sys.stdin.readline()`. Como ler do console no terminal é uma operação bloqueante de E/S, ela precisa de uma thread separada para evitar que o congelamento do terminal trave o recebimento de mensagens vindas da rede.
+3.  **Thread de Escuta do Socket**: Roda o laço `ler_mensagens_iter()` aguardando mensagens vindas do servidor para exibi-las instantaneamente no terminal.
+
+---
+
+## 4. Coordenação, Algoritmo Bully e Prevenção de Split-Brain
+
+A eleição do líder é realizada através de uma adaptação do **Algoritmo de Eleição Bully**. 
+
+### A. ID e Espaço de Endereçamento
+*   **Local**: O ID do processo é representado pelo número da porta TCP (`5001` a `5005`) vinculado na máquina. Para evitar o bug do Windows em que múltiplos processos ativos se ligavam à mesma porta local via `SO_REUSEADDR`, removemos essa flag do socket bully local, forçando o bind a falhar de forma nativa e garantindo a unicidade de portas como IDs.
+*   **LAN**: O ID do processo é representado numericamente pelo seu endereço IP (ordenado via comparação de sockets raw).
+
+### B. Prevenção de Split-Brain e Jitter Aleatório
+Em redes descentralizadas, o fenômeno de *split-brain* ocorre quando um grupo se divide e elege múltiplos coordenadores simultaneamente. Tratamos isso em dois níveis:
+
+1.  **Varredura Preventiva de Jogo Ativo**: Antes de iniciar a eleição tradicional de IPs, o processo varre todos os IPs participantes na porta de jogo `5555`. Se algum jogo já estiver ativo, o IP dele é retornado imediatamente como o líder. Isso protege partidas em andamento e impede que novos nós com IPs maiores que entram na rede se declarem líderes indevidamente.
+2.  **Jitter Aleatório (Atraso com Ruído)**: Quando o Cérebro cai, os clientes detectam a perda de conexão. Em vez de iniciarem a eleição ao mesmo tempo, introduzimos jitter aleatório:
+    $$\text{Tempo de Espera} = 3.0 + \text{random}(0.1, 1.0) \text{ segundos}$$
+    O nó de maior ID tende a acordar primeiro, rodar a eleição Bully, declarar-se líder e inicializar o `ServidorCerebro` na porta `5555`. Quando os nós menores acordarem do jitter, eles detectarão a porta `5555` ativa no líder e se conectarão de forma limpa como clientes, sem precisar disparar varreduras bully redundantes e concorrentes na rede.
+
+---
+
+## 5. Sincronização Lógica e Chat Causal
+
+Para garantir a lógica de discussões distribuídas (onde perguntas nunca devem aparecer após as respostas por conta de atrasos de transmissão), o chat do jogo implementa **Relógios Vetoriais (Vector Timestamps)**.
+
+```
+Jogador A: "Quem é o Infiltrado?" [A:1] (latência física)
+Jogador B: Recebe [A:1], responde: "É o Carlos!" [A:1, B:1]
+Carlos: Recebe msg de Bob [A:1, B:1] antes da msg de Alice
+Carlos compara relógios: Carlos local [A:0, B:0] vs Mensagem [A:1, B:1]
+Carlos não viu Alice=1 ainda. Mensagem de Bob é retida.
+Carlos recebe msg de Alice [A:1] ➔ Imprime Alice ➔ Libera msg de Bob ➔ Imprime Bob.
 ```
 
----
+### A. Incremento e Transmissão
+Cada processo de jogador mantém um dicionário `self.vt` que mapeia o nome de cada jogador conhecido ao seu relógio lógico.
+*   Ao digitar uma mensagem de chat no terminal, o cliente incrementa seu relógio local:
+    $$\text{VT}_{\text{local}}[\text{meu\_nome}] = \text{VT}_{\text{local}}[\text{meu\_nome}] + 1$$
+*   A mensagem é encapsulada com o vetor formatado: `CHAT_MSG|VT:Alice=1;Bob=0|MSG:Mensagem` e enviada ao servidor.
 
-## 3. Conceitos de Sistemas Distribuídos Implementados
+### B. Entrega Causal
+Ao receber um multicast de chat com um vetor $\text{VT}_{\text{msg}}$ associado ao remetente $r$, o cliente retém a mensagem no buffer `self.buffer_msgs` e avalia as condições de entrega:
+1.  **Condição 1 (Ordem Direta)**: O relógio do remetente na mensagem é exatamente igual ao relógio local do remetente + 1:
+    $$\text{VT}_{\text{msg}}[r] == \text{VT}_{\text{local}}[r] + 1$$
+2.  **Condição 2 (Histórico Causal)**: Para qualquer outro jogador $k$, o receptor já entregou todas as mensagens que o remetente $r$ já havia entregue antes de transmitir a mensagem atual:
+    $$\forall k \neq r, \quad \text{VT}_{\text{msg}}[k] \le \text{VT}_{\text{local}}[k]$$
 
-### A. Sockets TCP e Enquadramento de Aplicação (Framing)
-A comunicação ocorre sobre sockets TCP. Como o TCP opera como um fluxo contínuo de bytes (*byte-stream*), implementamos um protocolo estruturado de aplicação para evitar a **coalescência de mensagens** (agrupamento indesejado de pacotes):
-*   **Delimitação**: Cada mensagem de aplicação termina estritamente com um caractere de quebra de linha (`\n`).
-*   **Helper `enviar_msg`**: Garante que o texto seja enviado por completo (`sendall`) com o sufixo `\n`.
-*   **Classe `LeitorSocket`**: Mantém um buffer interno de strings por conexão. Ele lê bytes do socket e apenas entrega mensagens completas à aplicação quando encontra o delimitador `\n`, tratando timeouts de forma transparente.
-
-### B. Eleição de Líder (Algoritmo Bully)
-O líder da partida é eleito dinamicamente:
-*   **Modo Local**: Utiliza portas TCP sequenciais (`5001` a `5005`) como IDs de processos. O nó tenta se conectar às portas maiores que a sua. Se nenhuma estiver ativa, ele assume a liderança.
-*   **Modo LAN (Prevenção de Split-Brain)**:
-    1.  **Etapa 1**: O processo realiza uma varredura tentando conectar-se na porta do jogo (`PORTA_JOGO = 5555`) em todos os IPs participantes. Se um jogo já estiver ativo em alguma máquina, esse IP é mantido como coordenador (evitando que a entrada de um nó com IP maior quebre a partida atual).
-    2.  **Etapa 2**: Se não houver servidor rodando, o maior IP vivo na rede (verificado via conexões na porta de presença `5556`) vence a eleição e inicia o `ServidorCerebro`.
-
-### C. Concorrência e Segurança de Threads (Locks)
-Ambos os lados do sistema são multi-threaded e blindados contra condições de corrida:
-*   **No Servidor**: A thread principal aceita conexões (`accept()`) e dispara uma thread de execução para cada cliente. O acesso a variáveis críticas (como dicionário de conexões `self.jogadores` e `self.estado_jogo`) é protegido por um lock reentrante (`self.estado_lock`).
-*   **No Cliente**: Uma thread separada captura o teclado em loop, e outra escuta a rede. O vetor de timestamps (`self.vt`) e o buffer de entrega causal do chat são protegidos por um lock de dados local (`self.vt_lock`) para evitar inconsistências durante escritas concorrentes das duas threads.
-
-### D. Ordenação Causal (Vetor de Timestamps)
-Para garantir que mensagens de chat cheguem em ordem de causa e efeito, cada cliente mantém um relógio lógico baseado em **Vetores de Timestamps**:
-1.  Ao enviar uma mensagem, o cliente incrementa seu próprio relógio no vetor e envia o estado do vetor serializado (ex: `Alice=1;Bob=2`).
-2.  Ao receber uma mensagem, o receptor a coloca em uma fila e avalia as condições de Raynal:
-    *   $\text{V}_{\text{msg}}[sender] == \text{V}_{\text{local}}[sender] + 1$ (é a mensagem imediatamente consecutiva deste remetente).
-    *   $\text{V}_{\text{msg}}[k] \le \text{V}_{\text{local}}[k]$ para todo $k \neq sender$ (o receptor já entregou todas as mensagens de outros nós que o remetente havia visto).
-3.  A mensagem só é exibida na tela quando as duas condições são atendidas, garantindo a ordem lógica da conversa.
+A mensagem é impressa na tela assim que ambas as condições forem atendidas. O relógio local é então incrementado ($\text{VT}_{\text{local}}[r] = \text{VT}_{\text{local}}[r] + 1$) e o buffer é reavaliado recursivamente.
 
 ---
 
-## 4. Fluxo da Rodada (Passo a Passo)
+## 6. Sincronização de Dados (Locks)
 
-```
-[ LOBBY ] ──(Host digita /start)──> [ DICAS ] ──(Todos enviam dicas)──> [ CHAT CAUSAL ]
-                                                                             │
-    [ LOBBY ] <──(Resultado e Placar)── [ VOTACAO ] <──(Todos /votar)────────┘
-```
-
-1.  **Fase de Lobby**: Jogadores conectam-se ao coordenador e podem usar o chat livre. O Host digita `/start` para começar.
-2.  **Fase de Dicas**: O servidor sorteia os papéis e palavras. Cada jogador digita `/dica [palavra]` relacionada ao seu termo.
-3.  **Fase de Chat**: O servidor agrupa as dicas, faz o multicast para todos e abre o chat causal.
-4.  **Barreira de Sincronização**: Para avançar, os jogadores devem digitar `/votar`. Quando todos os participantes ativos derem skip no chat, a barreira é liberada.
-5.  **Fase de Votação**: O chat é bloqueado. Os jogadores digitam `/voto [nome]`.
-6.  **Veredito**: O servidor contabiliza os votos:
-    *   Empates ou erro na eliminação: O infiltrado ganha 2 pontos.
-    *   Eliminação correta: Os inocentes ganham 1 ponto cada.
-    *   O estado do jogo retorna para `LOBBY`.
+Como os sockets e as threads operam de forma concorrente em memória compartilhada, a consistência de dados é mantida com locks estruturados:
+*   **Servidor**: Um lock de exclusão mútua protege todas as leituras e mutações do dicionário de conexões dos jogadores e transições da máquina de estados do jogo. Isso evita corrupções de estado se dois jogadores enviarem dicas ou votos no mesmo milésimo de segundo.
+*   **Cliente**: Impede que a thread de input (que incrementa o vetor ao enviar dados do console) e a thread de rede (que altera o vetor ao entregar mensagens ordenadas) corrompam o estado do dicionário.
 
 ---
 
-## 5. Tolerância a Falhas e Recuperação de Estado
+## 7. Tolerância a Falhas e Recuperação de Placar
 
-### Queda de Jogador Comum / Infiltrado
-*   O servidor detecta a desconexão no laço de leitura de socket.
-*   O cérebro limpa o estado do socket caído sob proteção de lock, reduz a contagem de ativos, define o estado do jogo para `LOBBY` e avisa a todos via multicast que a partida foi interrompida, retornando os jogadores restantes ao Lobby para reiniciar.
+O sistema implementa tolerância a falhas utilizando replicação de dados baseada em clientes:
+1.  A pontuação acumulada do jogo é armazenada localmente em cada cliente ativo através do cache `MEUS_PONTOS_GLOBAIS`.
+2.  Quando o Cérebro cai, os clientes detectam a perda de conexão, reelegem um novo líder, que por sua vez inicializa um novo `ServidorCerebro`.
+3.  Ao conectar no novo servidor, o pacote `JOIN` carrega consigo o valor de `MEUS_PONTOS_GLOBAIS`.
+4.  O novo servidor recupera o estado consolidado da pontuação acumulada de todos os clientes no lobby, reiniciando o jogo sem perdas do placar original.
 
-### Queda do Servidor ("Cérebro")
-1.  Os clientes detectam que a conexão TCP foi encerrada abruptamente ou falhou no timeout de 2 segundos.
-2.  Os processos clientes entram no modo de eleição Bully e reconfiguram quem será o novo líder em 3 segundos.
-3.  O novo líder sobe o `ServidorCerebro` em sua máquina.
-4.  Os clientes conectam-se ao novo servidor e enviam um pacote especial `JOIN` contendo sua pontuação acumulada que estava guardada localmente (`MEUS_PONTOS_GLOBAIS`).
-5.  O novo servidor reconstrói o placar em memória a partir dos dados consolidados dos clientes. O placar geral é preservado e a rodada reinicia no Lobby.
+---
 
+## 8. Protocolo de Aplicação Criado (Especificação de Mensagens)
 
+Para a troca de dados estruturados na camada de aplicação sob o enquadramento de quebra de linha (`\n`), projetamos e implementamos o seguinte protocolo:
 
-## Lista de Mensagens do Protocolo de Aplicação
+| Comando / Mensagem | Direção | Formato do Pacote (String UTF-8) | Descrição e Gatilho |
+| :--- | :--- | :--- | :--- |
+| **`JOIN`** | Cliente ➔ Servidor | `JOIN\|NAME:<apelido>\|CEREBRO:<true/false>\|PTS:<pontos>` | Enviado após o estabelecimento da conexão TCP para registro do apelido do jogador, envio da sua flag de liderança (`is_cerebro`) e recuperação de pontuação acumulada (`MEUS_PONTOS_GLOBAIS`). |
+| **`REJECT`** | Servidor ➔ Cliente | `REJECT\|MSG:<texto>` | Enviado se o jogo já estiver em andamento (fase diferente de Lobby) ou se o apelido escolhido já estiver em uso. |
+| **`SYS`** | Servidor ➔ Cliente | `SYS\|MSG:<texto>` | Encapsula mensagens globais e informativas do sistema enviadas pelo servidor (ex: lobby, notificações de votação, placares). |
+| **`ROLE`** | Servidor ➔ Cliente | `ROLE\|ROLE:<papel>\|WORD:<palavra>` | Mensagem unicast privada com o papel (`INOCENTE` ou `INFILTRADO`) e a palavra secreta sorteada para a rodada. |
+| **`TIP_REQ`** | Servidor ➔ Cliente | `TIP_REQ\|MSG:<texto>` | Notificação em multicast convocando os jogadores a enviarem suas dicas iniciais. |
+| **`TIP`** | Cliente ➔ Servidor | `TIP\|WORD:<dica>` | Enviado pelo jogador contendo sua dica secreta digitada via `/dica [palavra]`. |
+| **`ALL_TIPS`** | Servidor ➔ Cliente | `ALL_TIPS\|LIST:<lista_dicas>` | Retransmissão multicast da lista de dicas unificada de todos os jogadores (separadas pelo delimitador `&&`). |
+| **`CHAT_START`** | Servidor ➔ Cliente | `CHAT_START\|MSG:<texto>` | Notificação multicast avisando a abertura do chat livre. Limpa as instâncias locais do vetor de timestamps do cliente. |
+| **`CHAT_MSG`** | Cliente ➔ Servidor | `CHAT_MSG\|VT:<vetor>\|MSG:<texto>` | Mensagem de chat digitada pelo usuário, contendo o estado atualizado do relógio lógico causal do nó (ex: `Alice=1;Bob=0`). |
+| **`CHAT_MSG` (Start)** | Cliente ➔ Servidor | `CHAT_MSG\|MSG:/start` | Mensagem enviada pelo Host do jogo para transicionar a partida do `LOBBY` para `DICAS`. |
+| **`CHAT_MSG` (Votar)** | Cliente ➔ Servidor | `CHAT_MSG\|MSG:/votar` | Mensagem que indica ao servidor o desejo do jogador de pular a fase de chat e transicionar para o voto secreto. |
+| **`CHAT`** | Servidor ➔ Cliente | `CHAT\|FROM:<remetente>\|VT:<vetor/NULL>\|MSG:<texto>` | Retransmissão multicast das mensagens de chat. Se o vetor for `NULL` (Lobby), o cliente exibe a mensagem de imediato; caso contrário, processa a ordenação causal. |
+| **`CHAT_END`** | Servidor ➔ Cliente | `CHAT_END\|MSG:<texto>` | Notificação multicast que encerra a discussão do chat livre e bloqueia o canal de escrita comum dos clientes. |
+| **`VOTE`** | Cliente ➔ Servidor | `VOTE\|TARGET:<nome>` | Voto secreto contra um jogador suspeito de ser o infiltrado, emitido via `/voto [nome]`. |
+| **`SCORE_UPDATE`** | Servidor ➔ Cliente | `SCORE_UPDATE\|PTS:<pontos>` | Mensagem privada de fim de rodada usada para sincronizar e persistir no cache local do cliente seu total de pontos acumulados. |
+| **`ROUND_END`** | Servidor ➔ Cliente | `ROUND_END\|RESULT:<texto>` | Notificação multicast contendo o veredito final da rodada de jogo. |
+| **`REQ_SCORE`** | Cliente ➔ Servidor | `REQ_SCORE\|MSG:null` | Requisição enviada quando o jogador digita `/placar` no lobby para obter a lista de pontos. |
 
-JOIN|NAME:<n>|CEREBRO:<c>|PTS:<p>	Cliente ➔ Servidor	Enviada imediatamente após conectar para registrar o jogador e recuperar seus pontos.
-
-REJECT|MSG:<texto>	Servidor ➔ Cliente	Enviada se o jogador tenta entrar em um jogo que já iniciou (fora da fase de lobby).
-
-SYS|MSG:<texto>	Servidor ➔ Cliente	Mensagens informativas do sistema (ex: "Fulano entrou", tabelas de pontuação).
-
-ROLE|ROLE:<papel>|WORD:<palavra>	Servidor ➔ Cliente	Enviada privadamente no início da partida para dar a palavra e a função (Inocente/Infiltrado).
-
-TIP_REQ|MSG:<texto>	Servidor ➔ Cliente	Notificação multicast avisando que a fase de dicas começou.
-
-TIP|WORD:<dica>	Cliente ➔ Servidor	Enviada quando o jogador digita /dica [palavra].
-
-ALL_TIPS|LIST:<lista_dicas>	Servidor ➔ Cliente	Envia a lista compilada contendo a dica de todos os jogadores ativos.
-
-CHAT_START|MSG:<texto>	Servidor ➔ Cliente	Notificação multicast que limpa os vetores e avisa que o chat está aberto.
-
-CHAT_MSG|VT:<vetor>|MSG:<texto>	Cliente ➔ Servidor	Envia uma mensagem comum de chat contendo o vetor de timestamps para ordenação causal.
-
-CHAT_MSG|MSG:/start	Cliente ➔ Servidor	Comando enviado pelo Host para iniciar o jogo.
-
-CHAT_MSG|MSG:/votar	Cliente ➔ Servidor	Comando enviado pelo jogador que quer pular a fase de chat e ir para a votação.
-
-CHAT|FROM:<r>|VT:<vetor/NULL>|MSG:<texto>	Servidor ➔ Cliente	Retransmissão (multicast) do chat para que todos os clientes recebam a mensagem.
-
-CHAT_END|MSG:<texto>	Servidor ➔ Cliente	Notificação multicast que bloqueia o chat e avisa que a fase de votos começou.
-
-VOTE|TARGET:<nome>	Cliente ➔ Servidor	Enviada quando o jogador vota em alguém com /voto [nome].
-
-SCORE_UPDATE|PTS:<pontos>	Servidor ➔ Cliente	Enviada no fim da rodada para que o cliente atualize seu cache local de pontos.
-
-ROUND_END|RESULT:<texto>	Servidor ➔ Cliente	Notificação multicast contendo o veredito final da rodada.
-
-REQ_SCORE|MSG:null	Cliente ➔ Servidor	Enviada quando o jogador digita /placar.

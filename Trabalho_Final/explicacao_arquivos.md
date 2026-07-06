@@ -1,87 +1,85 @@
-# Documentação Detalhada dos Arquivos do Projeto: "A Palavra Infiltrada"
+# Documentação Técnica dos Arquivos do Jogo: "A Palavra Infiltrada"
 
-Este documento apresenta uma análise técnica minuciosa de cada um dos três arquivos Python que compõem o sistema distribuído do jogo: **rede.py**, **game_core.py** e **jogo.py**.
+Este documento descreve detalhadamente a estrutura, variáveis, métodos, fluxos lógicos e interações de rede presentes em cada arquivo do projeto: **rede.py**, **game_core.py** e **jogo.py**.
 
 ---
 
-## 1. [rede.py](file:///c:/Users/Usu%C3%A1rio/Desktop/sistemas_distribuidos/Trabalho_Final/rede.py)
+## 1. [rede.py]
 
-O arquivo `rede.py` define a infraestrutura de baixo nível da comunicação por rede, constantes de portas/endereços, enquadramento de mensagens e os algoritmos distribuídos para eleição de líder.
+O arquivo `rede.py` atua como a camada de transporte e infraestrutura de baixo nível. Ele define os parâmetros de conexão, o protocolo de enquadramento de mensagens (*message framing*) e os algoritmos distribuídos de eleição e auto-descoberta.
 
-### Constantes e Parâmetros de Rede
-*   `HOST_LOCAL = '127.0.0.1'`: IP de loopback local.
-*   `HOST_LAN = '0.0.0.0'`: Endereço curinga para escutar em todas as placas de rede do computador.
-*   `PORTA_JOGO = 5555`: Porta TCP onde roda o servidor do jogo (`ServidorCerebro`).
-*   `PORTA_BULLY_LAN = 5556`: Porta TCP de presença em rede local para a eleição distribuída.
-*   `PORTAS_BULLY = [5001, 5002, 5003, 5004, 5005]`: IDs lógicos representados por portas TCP locais.
-*   `BUFFER = 1024`: Tamanho máximo de leitura de bytes no socket.
-*   `PARES_DE_PALAVRAS`: Lista de tuplas contendo pares de palavras para inocentes e infiltrados.
+### Parâmetros de Configuração
+*   `HOST_LOCAL = '127.0.0.1'`: Endereço para simulações na mesma máquina.
+*   `HOST_LAN = '0.0.0.0'`: Vincula sockets para escutar em todas as placas de rede do sistema.
+*   `PORTA_JOGO = 5555`: Porta TCP onde roda o servidor da partida.
+*   `PORTA_BULLY_LAN = 5556`: Porta TCP de presença/liveness usada no algoritmo Bully em LAN.
+*   `PORTA_DISCOVERY = 5557`: Porta UDP usada para a auto-descoberta por broadcast.
+*   `PORTAS_BULLY = [5001, 5002, 5003, 5004, 5005]`: IDs lógicos (portas) para a eleição Bully local.
+*   `BUFFER = 1024`: Tamanho máximo de leitura de dados de rede por bloco.
+*   `PARES_DE_PALAVRAS`: Lista contendo pares de palavras secretas sorteáveis.
 
-### Enquadramento de Mensagens (Framing TCP)
-*   `enviar_msg(sock, texto)`: Garante o envio completo do pacote (`sendall`) com o sufixo `\n`. Isso previne a coalescência de pacotes (mensagens consecutivas agrupando-se em uma única string).
-*   `LeitorSocket(sock)`:
-    *   Mantém um buffer local de strings.
-    *   `ler_mensagem()`: Lê bytes do socket até encontrar um `\n`. Em caso de estouro de timeout de socket (2.0s), retorna `""` para manter a thread ativa. Se a conexão cair, retorna `None`. Ao encontrar `\n`, divide o buffer, retorna a mensagem limpa e armazena os caracteres restantes.
+### Enquadramento de Sockets (Framing)
+*   `enviar_msg(sock, texto)`: Função utilitária que adiciona `\n` ao final do texto e o transmite via `sendall()`, evitando a fusão de mensagens consecutivas no TCP.
+*   `LeitorSocket`: Classe que encapsula o socket e mantém um buffer de strings (`self.buffer`).
+    *   `ler_mensagem()`: Executa leituras constantes de 1024 bytes. Se a conexão cair, retorna `None`. Se estourar o timeout, retorna `""` (mantendo a thread ativa). Se achar `\n`, recorta e retorna a mensagem limpa, retendo o restante no buffer.
+    *   `ler_mensagens_iter()`: Gerador (`yield`) que permite iterar sobre novas mensagens recebidas de forma transparente no loop de eventos.
 
-### Algoritmos e Funções
-*   `responder_pings_bully(meu_socket)`: Loop executado em thread separada que aceita conexões rápidas e as fecha imediatamente, servindo como ping de presença do nó.
+### Lógica de Eleição e Presença
+*   `responder_pings_bully(meu_socket)`: Thread que fica executando `accept()` na porta bully e fechando a conexão na sequência. Funciona como um sinalizador de que o nó está online.
 *   `executar_eleicao_bully(meu_id, host_jogo)` (Local):
-    *   Tenta conectar na porta do jogo (`5555`). Se o jogo já estiver rodando, aborta retornando `False`.
-    *   Varre portas de ID maior (`meu_id + 1` até `5005`). Se conseguir abrir conexão TCP em alguma, aborta retornando `False`.
-    *   Se nenhuma porta maior responder, retorna `True` (e o nó vira o líder).
-*   `normalizar_lista_ips(texto_ips)`: Trata a entrada de texto de IPs, valida-os, remove duplicatas e os ordena numericamente.
+    *   Tenta conectar na porta `5555`. Se o jogo já estiver rodando, retorna `False`.
+    *   Varre portas maiores que a dele. Se conectar a alguma, abre mão da eleição (`alguem_maior_vivo = True`), aguarda 2 segundos e retorna `False`. Se nenhuma porta maior responder, retorna `True`.
+*   `iniciar_discovery_lan(meu_ip)` (LAN):
+    *   **Auto-Descoberta Contínua**: Inicia uma thread de background que envia em loop pacotes UDP Broadcast contendo o próprio IP para `255.255.255.255:5557` a cada 0.5s, e escuta respostas.
+    *   **Set Compartilhado**: Adiciona novos IPs descobertos em um set compartilhado com controle de concorrência (`ips_lock`), eliminando a necessidade de digitar os IPs dos computadores manualmente.
 *   `executar_eleicao_bully_lan(meu_ip, ips_participantes)` (LAN):
-    *   **Passo 1**: Verifica ativamente se já há algum servidor de jogo rodando na porta `5555` em algum IP da lista. Se sim, retorna esse IP de imediato para evitar Split-Brain.
-    *   **Passo 2**: Ordena os IPs de forma decrescente. Varre a lista tentando conexões na porta de presença (`5556`). O primeiro IP a responder é eleito líder (por ser o maior IP vivo).
+    *   **Etapa 1**: Escaneia a porta de jogo `5555` em todos os IPs descobertos. Se um jogo já estiver rodando, retorna esse IP de imediato como líder para prevenir split-brain.
+    *   **Etapa 2**: Se não houver jogo ativo, ordena os IPs decrescentemente e conecta na porta bully `5556`. O maior IP vivo a responder vira o líder.
 
 ---
 
-## 2. [game_core.py](file:///c:/Users/Usu%C3%A1rio/Desktop/sistemas_distribuidos/Trabalho_Final/game_core.py)
+## 2. [game_core.py]
 
-O arquivo `game_core.py` implementa a máquina de estados do servidor e a interface de lógica de rede do cliente, além do controle causal do chat.
-
-### Variável Global de Persistência
-*   `MEUS_PONTOS_GLOBAIS = 0`: Armazena a pontuação acumulada do jogador local. Permite a restauração do placar quando o cliente reconectar a um novo líder após uma falha.
+O arquivo `game_core.py` contém as regras lógicas da partida, a máquina de estados do servidor e a interface de manipulação de relógios lógicos causais do cliente.
 
 ### Classe `ServidorCerebro` (O Servidor)
-Gerencia o estado e as regras da rodada da partida.
-*   `self.jogadores = {}`: Dicionário que mapeia conexões TCP aos dados de jogo de cada um.
-*   `self.estado_jogo`: String que armazena a fase da partida (`'LOBBY'`, `'DICAS'`, `'CHAT'`, `'VOTACAO'`).
-*   `self.estado_lock = threading.RLock()`: Lock que garante exclusão mútua sobre as variáveis compartilhadas do servidor (acessadas por múltiplas worker threads).
+Gerencia o estado e coordena o envio de mensagens para os clientes.
+*   `self.estado_lock`: Lock reentrante (`threading.RLock`) que garante a consistência das operações concorrentes efetuadas pelas worker threads no estado do jogo.
 *   `tratar_cliente(conn, addr)`:
-    *   Lê o primeiro pacote `JOIN`. Registra o jogador sob lock e inicia a escuta.
-    *   Itera nas mensagens recebidas. Dependendo da fase do jogo, valida dicas (`TIP`), skips de chat (`CHAT_MSG|MSG:/votar`) e votos (`VOTE`).
-    *   Em caso de desconexão (bloco `finally`), remove o jogador de forma segura, reduz a barreira e volta a partida para o Lobby.
-*   `enviar_multicast(mensagem)`: Transmite mensagens simultaneamente a todos os jogadores conectados.
-*   `iniciar_partida()`: Sorteia as palavras, define o infiltrado e dispara as regras.
-*   `checar_todas_as_dicas()`: Se todas as dicas foram recebidas, envia o agrupamento a todos e libera o chat causal.
-*   `iniciar_votacao()`: Trava o chat e abre o canal de votos secretos.
-*   `checar_todos_votos()`: Avalia empates e eliminações, atribui os pontos e atualiza o placar.
+    *   Recebe o pacote `JOIN` com o nome e placar acumulado.
+    *   **Bloqueio de Nomes Duplicados**: Varre `self.jogadores` e verifica se o apelido já está em uso (case-insensitive). Se sim, envia `REJECT` e encerra a conexão.
+    *   Loop de mensagens do cliente: processa `/start`, `/dica [palavra]`, `/voto [nome]` e `/votar` (skip) conforme a fase atual do jogo (`LOBBY`, `DICAS`, `CHAT`, `VOTACAO`).
+    *   `finally`: Garante a remoção limpa do jogador que desconectar (por comando ou queda), reduz a contagem sob lock e anula a rodada retornando todos ao lobby.
+*   `enviar_multicast(mensagem)`: Envia mensagens para todos os jogadores ativos copiando a lista de clientes de forma segura sob lock rápido.
+*   `iniciar_partida()`: Sorteia as palavras da rodada e despacha-as privadamente aos clientes.
+*   `checar_todas_as_dicas()`: Valida se todos enviaram dicas e libera a discussão.
+*   `iniciar_votacao()`: Transiciona para a fase de voto secreto, travando o chat de texto.
+*   `checar_todos_votos()`: Computa a contagem de votos. Empates ou erros de eliminação pontuam o infiltrado (2 pts); eliminação bem-sucedida pontua os inocentes (1 pt cada). Reseta o estado para `LOBBY` e envia o placar atualizado.
 
 ### Classe `ClienteJogador` (O Cliente)
-*   `self.vt = {}`: Vetor de timestamps lógicos do nó.
-*   `self.buffer_msgs = []`: Mensagens represadas que aguardam resolução causal.
-*   `self.vt_lock = threading.Lock()`: Lock para sincronizar a thread de input e a de recepção no acesso ao vetor de timestamps.
-*   `conectar(nome, is_cerebro, host_jogo)`: Conecta o socket ao servidor, inicia a thread de recepção e inicia a leitura de teclado.
-*   `ouvir_servidor()`: Loop de leitura de pacotes recebidos do cérebro. Se o socket fechar, adiciona um **atraso com jitter aleatório** (3 a 4 segundos) antes de disparar a flag `queda_silenciosa`, evitando que todos iniciem a eleição distribuída no exato mesmo instante.
-*   `processar_entrega_causal(remetente, vt_str, texto)`: Implementa o algoritmo de Raynal. Uma mensagem só sai do buffer local para a tela se o receptor já tiver entregue todas as dependências dela.
-*   `processar_inputs()`: Lê inputs da fila de teclado. Se for mensagem de chat comum, incrementa o relógio lógico local, anexa o vetor formatado à string e a envia.
+Representa a lógica local e a ordenação de dados do terminal do jogador.
+*   `self.vt_lock`: Lock local para proteger acessos ao vetor lógico `self.vt` e buffer causal.
+*   `conectar(nome, is_cerebro, host_jogo)`: Conecta o socket ao servidor e inicia as threads.
+*   `ouvir_servidor()`:
+    *   Thread que recebe mensagens e comandos do servidor.
+    *   **Jitter no Failover**: Em caso de queda do socket, aguarda um tempo aleatório (`3.0 + random.uniform(0.1, 1.0)`) antes de disparar a eleição, mitigando o risco de colisões e split-brain na eleição simultânea de nós sobreviventes.
+*   `processar_entrega_causal(remetente, vt_str, texto)`: Compara o vetor lógico recebido ($\text{VT}_{\text{msg}}$) com o relógio local do cliente ($\text{VT}_{\text{local}}$) usando o algoritmo de Raynal. Retém no buffer até que as dependências sejam entregues e exibe as mensagens ordenadamente.
+*   `processar_inputs()`: Captura inputs da fila. Remove silenciosamente qualquer caractere `|` para evitar corrupções no parser de comandos do protocolo. Se for chat comum, incrementa o relógio de timestamp local, serializa o vetor e envia o pacote.
 
 ---
 
-## 3. [jogo.py](file:///c:/Users/Usu%C3%A1rio/Desktop/sistemas_distribuidos/Trabalho_Final/jogo.py)
+## 3. [jogo.py]
 
-O arquivo `jogo.py` serve de ponto de entrada. Ele orquestra os modos de inicialização do programa e o loop de tolerância a falhas.
+O arquivo `jogo.py` orquestra a inicialização e controla a tolerância a falhas através do loop de failover.
 
-### Inicialização e Escolha de Rede
-*   Configura o codinome do jogador e escolhe se roda em modo LAN ou modo local.
-*   **Ligação de Sockets de Presença**:
-    *   No modo local, varre e tenta fazer `bind` nas portas `5001` a `5005` (removido o `SO_REUSEADDR` para garantir exclusividade de ID no Windows). Inicia a thread de liveness.
-    *   No modo LAN, faz bind na porta padrão `5556` de presença local e inicia a thread de liveness.
+### Inicialização e Cadastro de IDs
+*   Cadastra o apelido do jogador e realiza a sanitização do caractere `|`.
+*   **Configuração de Redes**:
+    *   **Modo Local**: Varre sequencialmente as portas `5001` a `5005` e tenta fazer o `bind`. A primeira porta livre vira o ID exclusivo do processo local. **Não usa `SO_REUSEADDR`**, o que impede que múltiplos processos locais compartilhem a mesma porta no Windows, garantindo IDs de eleição únicos.
+    *   **Modo LAN**: Inicia a thread contínua de descoberta UDP em segundo plano (`iniciar_discovery_lan`) que atualiza dinamicamente a lista de participantes.
 
-### Loop de Reconfiguração e Tolerância a Falhas (`while True:`)
-O loop principal que permite ao jogo sobreviver à queda do líder:
-1.  **Chama a Eleição**: Executa a rotina Bully local ou LAN para descobrir quem é o atual `host_jogo`.
-2.  **Inicia Servidor**: Se o nó descobriu ser o líder da eleição e seu servidor ainda não está rodando localmente, inicia a thread do `ServidorCerebro`.
-3.  **Estabelece Conexão**: Instancia o `ClienteJogador` e chama o laço bloqueante `.conectar()`.
-4.  **Recuperação**: Se o cliente desconectar (servidor caiu), o fluxo avança para `jogador.queda_silenciosa`, define `servidor_ativo = False`, dorme 1 segundo e volta ao início do laço (Passo 1), executando um novo Bully e reconectando as pontuações no servidor novo.
+### Loop de Execução e Failover (`while True:`)
+1.  **Chama a Eleição**: Executa a rotina Bully local ou LAN para encontrar o `host_jogo`. No modo LAN, passa a lista de IPs de participantes coletados dinamicamente no snapshot de discovery.
+2.  **Sobe o Cérebro**: Se for o líder da eleição e o servidor ainda estiver inativo, inicia o `ServidorCerebro` em uma nova thread.
+3.  **Bloqueio de Jogo**: Instancia o `ClienteJogador` e entra na chamada bloqueante `.conectar()`. O processo fica represado ali capturando inputs e aguardando eventos do jogo.
+4.  **Recuperação**: Se o servidor cair, o controle retorna ao `jogo.py`, desliga a flag do servidor, aguarda 1 segundo e executa o `continue` para voltar ao topo do laço, elegendo um novo líder de forma transparente.

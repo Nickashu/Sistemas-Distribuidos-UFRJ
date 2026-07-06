@@ -52,6 +52,19 @@ PARES_DE_PALAVRAS = [
     ("Cachorro", "Lobo"),
     ("Violão", "Baixo"),
     ("Avião", "Helicóptero"),
+    ("Computador", "Celular"),
+    ("Livro", "Caderno"),
+    ("Café", "Chá"),
+    ("Futebol", "Basquete"),
+    ("Carro", "Moto"),
+    ("Sol", "Lua"),
+    ("Cinema", "Teatro"),
+    ("Maçã", "Pêra"),
+    ("Gato", "Tigre"),
+    ("Chuva", "Neve"),
+    ("Piano", "Teclado"),
+    ("Relógio", "Cronômetro"),
+    ("Pizza", "Hambúrguer"),
 ]
 
 

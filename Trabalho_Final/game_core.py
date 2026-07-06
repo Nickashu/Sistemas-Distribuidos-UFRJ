@@ -108,7 +108,7 @@ class ServidorCerebro:
                             jogadores_snapshot = list(self.jogadores.values())
                         placar_msg = "\\n --- PLACAR ATUAL ---"
                         for j in jogadores_snapshot:
-                            placar_msg += f"\\n   - {j['nome']}{'(HOST) ' if j['is_host'] else ''}: {j['pontos']} pts"
+                            placar_msg += f"\\n   - {j['nome']}{' (HOST)' if j['is_host'] else ''}: {j['pontos']} pts"
                         placar_msg += "\\n-----------------------"
                         enviar_msg(conn, f"SYS|MSG:{placar_msg}")
                     elif msg.startswith("CHAT_MSG"):  #Se for uma mensagem de chat normal
@@ -331,7 +331,7 @@ class ServidorCerebro:
             #Monta o texto do placar antes de sair do lock:
             placar_msg = "\\n --- TABELA DE PONTUAÇÃO ---"
             for j in self.jogadores.values():
-                placar_msg += f"\\n   - {j['nome']}{'(HOST) ' if j['is_host'] else ''}: {j['pontos']} pts"
+                placar_msg += f"\\n   - {j['nome']}{' (HOST)' if j['is_host'] else ''}: {j['pontos']} pts"
             placar_msg += "\\n-------------------------------"
             self.estado_jogo = 'LOBBY'
 
