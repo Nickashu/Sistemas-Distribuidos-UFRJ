@@ -148,8 +148,8 @@ def iniciar_discovery_lan(meu_ip):
         sock.bind(('', PORTA_DISCOVERY))
 
         while True:
-            #sock.sendto(meu_ip.encode(), ('255.255.255.255', PORTA_DISCOVERY))
-            sock.sendto(meu_ip.encode(), ('192.168.0.255', PORTA_DISCOVERY))
+            sock.sendto(meu_ip.encode(), ('255.255.255.255', PORTA_DISCOVERY))
+            #sock.sendto(meu_ip.encode(), ('192.168.0.255', PORTA_DISCOVERY))
             #Drena todos os pacotes disponíveis no buffer de recepção:
             sock.settimeout(0.5)
             try:
