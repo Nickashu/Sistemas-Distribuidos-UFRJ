@@ -8,7 +8,7 @@ import time
 from rede import HOST_LOCAL, PARES_DE_PALAVRAS, PORTA_JOGO, enviar_msg, LeitorSocket
 
 MEUS_PONTOS_GLOBAIS = 0  #Guarda o placar entre reinícios do cliente na mesma máquina
-MIN_JOGADORES = 3  #Número mínimo de jogadores para iniciar a partida
+MIN_JOGADORES = 2  #Número mínimo de jogadores para iniciar a partida
 
 #Classe do servidor (cérebro) do jogo, responsável por gerenciar o estado da partida e a comunicação com os clientes:
 class ServidorCerebro:

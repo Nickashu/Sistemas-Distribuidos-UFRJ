@@ -39,6 +39,14 @@ if __name__ == "__main__":
         time.sleep(3)  #Aguarda a discovery coletar broadcasts de máquinas já ativas antes da primeira eleição
         with ips_lock:
             print(f"Jogadores encontrados: {', '.join(sorted(ips_descobertos))}")
+            #Fallback manual caso a rede bloqueie UDP broadcast:
+            if len(ips_descobertos) <= 1:
+                ips_manual = input("Nenhum outro jogador encontrado. Digite IPs manualmente (separados por vírgula, ou Enter para pular): ").strip()
+                if ips_manual:
+                    for ip in ips_manual.split(","):
+                        ip = ip.strip()
+                        if ip:
+                            ips_descobertos.add(ip)
     
     meu_id = 0
     meu_socket_bully = None
@@ -103,7 +111,10 @@ if __name__ == "__main__":
                 time.sleep(1)
             
         jogador = ClienteJogador(fila_de_teclado)  #Indepentente de ser o cérebro ou não, cada nó cria um cliente para se conectar ao servidor do jogo
-        jogador.conectar(nome_jogador, is_cerebro=sou_lider, host_jogo=host_jogo)  #Essa chamada é bloqueante
+        #Se o servidor roda localmente (sou_lider), conecta via loopback para evitar problemas com interfaces virtuais (ex: WSL2):
+        host_conectar = '127.0.0.1' if sou_lider else host_jogo
+        jogador.conectar(nome_jogador, is_cerebro=sou_lider, host_jogo=host_conectar)  #Essa chamada é bloqueante
+        #jogador.conectar(nome_jogador, is_cerebro=sou_lider, host_jogo=host_jogo)  #Essa chamada é bloqueante
         
         if jogador.rejeitado:   #Entra nesse if se o jogador foi rejeitado pelo servidor (por exemplo, se o nome já estiver em uso):
             sys.exit()

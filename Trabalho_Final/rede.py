@@ -46,25 +46,32 @@ class LeitorSocket:
             yield msg  #yield permite que a função seja usada como um gerador, retornando mensagens uma a uma
 
 
-#Pares de palavras para o jogo: a primeira vai para os inocentes, a segunda para o infiltrado
+import base64
+
+# Pares de palavras codificadas em Base64 para evitar que jogadores vejam as respostas lendo o código fonte:
+PARES_DE_PALAVRAS_CODIFICADAS = [
+    ("UHJhaWE=", "UGlzY2luYQ=="),
+    ("Q2FjaG9ycm8=", "TG9ibw=="),
+    ("VmlvbMOjbw==", "QmFpeG8="),
+    ("QXZpw6Nv", "SGVsaWPDs3B0ZXJv"),
+    ("Q29tcHV0YWRvcg==", "Q2VsdWxhcg=="),
+    ("TGl2cm8=", "Q2FkZXJubw=="),
+    ("Q2Fmw6k=", "Q2jDoQ=="),
+    ("RnV0ZWJvbA==", "QmFzcXVldGU="),
+    ("Q2Fycm8=", "TW90bw=="),
+    ("U29s", "THVh"),
+    ("Q2luZW1h", "VGVhdHJv"),
+    ("TWHDp8Oj", "UMOqcmE="),
+    ("R2F0bw==", "VGlncmU="),
+    ("Q2h1dmE=", "TmV2ZQ=="),
+    ("UGlhbm8=", "VGVjbGFkbw=="),
+    ("UmVsw7NnaW8=", "Q3JvbsO0bWV0cm8="),
+    ("UGl6emE=", "SGFtYsO6cmd1ZXI="),
+]
+
 PARES_DE_PALAVRAS = [
-    ("Praia", "Piscina"),
-    ("Cachorro", "Lobo"),
-    ("Violão", "Baixo"),
-    ("Avião", "Helicóptero"),
-    ("Computador", "Celular"),
-    ("Livro", "Caderno"),
-    ("Café", "Chá"),
-    ("Futebol", "Basquete"),
-    ("Carro", "Moto"),
-    ("Sol", "Lua"),
-    ("Cinema", "Teatro"),
-    ("Maçã", "Pêra"),
-    ("Gato", "Tigre"),
-    ("Chuva", "Neve"),
-    ("Piano", "Teclado"),
-    ("Relógio", "Cronômetro"),
-    ("Pizza", "Hambúrguer"),
+    (base64.b64decode(p1).decode('utf-8'), base64.b64decode(p2).decode('utf-8'))
+    for p1, p2 in PARES_DE_PALAVRAS_CODIFICADAS
 ]
 
 
@@ -141,7 +148,8 @@ def iniciar_discovery_lan(meu_ip):
         sock.bind(('', PORTA_DISCOVERY))
 
         while True:
-            sock.sendto(meu_ip.encode(), ('255.255.255.255', PORTA_DISCOVERY))
+            #sock.sendto(meu_ip.encode(), ('255.255.255.255', PORTA_DISCOVERY))
+            sock.sendto(meu_ip.encode(), ('192.168.0.255', PORTA_DISCOVERY))
             #Drena todos os pacotes disponíveis no buffer de recepção:
             sock.settimeout(0.5)
             try:
