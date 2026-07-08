@@ -10,6 +10,29 @@ from rede import HOST_LOCAL, PARES_DE_PALAVRAS, PORTA_JOGO, enviar_msg, LeitorSo
 MEUS_PONTOS_GLOBAIS = 0  #Guarda o placar entre reinícios do cliente na mesma máquina
 MIN_JOGADORES = 3  #Número mínimo de jogadores para iniciar a partida
 
+try:
+    import readline
+except ImportError:
+    readline = None
+
+def exibir(texto):
+    if readline:
+        # No Linux/WSL:
+        # 1. Pega o conteúdo que o usuário já tinha digitado
+        conteudo_digitado = readline.get_line_buffer()
+        # 2. Limpa a linha atual da tela
+        sys.stdout.write('\r\033[K')
+        # 3. Escreve a mensagem recebida e desce a linha
+        sys.stdout.write(f"{texto}\n")
+        # 4. Escreve de volta o texto que o usuário estava digitando na linha de baixo
+        sys.stdout.write(conteudo_digitado)
+        sys.stdout.flush()
+    else:
+        # Fallback simples e seguro para Windows (sem readline)
+        # Apenas imprime a mensagem normal sem limpar a linha para não "apagar" o texto digitado
+        print(texto)
+        #sys.stdout.flush()
+
 #Classe do servidor (cérebro) do jogo, responsável por gerenciar o estado da partida e a comunicação com os clientes:
 class ServidorCerebro:
     def __init__(self, host_bind=HOST_LOCAL):
@@ -410,14 +433,14 @@ class ClienteJogador:
 
                 if msg.startswith("REJECT"):  #Mensagem de rejeição do servidor (por exemplo, se o nome já estiver em uso ou se a partida já tiver começado)
                     texto = msg.split("|")[1].split(":", 1)[1]
-                    print(f"\n [ACESSO NEGADO] {texto}")
+                    exibir(f"\n [ACESSO NEGADO] {texto}")
                     self.conectado = False
                     self.rejeitado = True
                     break
 
                 elif msg.startswith("SYS"):
                     texto = msg.split("|")[1].split(":", 1)[1].replace("\\n", "\n")
-                    print(f"\n[SISTEMA] {texto}")
+                    exibir(f"\n[SISTEMA] {texto}")
 
                 elif msg.startswith("CHAT|"):  #O chat pode chegar com ordem causal ou como mensagem simples
                     partes = msg.split("|", 3)
@@ -426,40 +449,40 @@ class ClienteJogador:
                     texto = partes[3].split(":", 1)[1]
 
                     if vt_str == "NULL":   #Se o vetor de timestamp for NULL, significa que a mensagem não precisa de ordenação causal e pode ser exibida imediatamente
-                        if remetente != self.meu_nome:
-                            print(f"[{remetente}]: {texto}")
+                        if readline or remetente != self.meu_nome:
+                            exibir(f"[{remetente}]: {texto}")
                     else:
                         self.processar_entrega_causal(remetente, vt_str, texto)
 
                 elif msg.startswith("ROLE"):
                     papel = msg.split("|")[1].split(":", 1)[1]
                     palavra = msg.split("|")[2].split(":", 1)[1]
-                    print(f"\n SEU PAPEL: {papel} |  SUA PALAVRA: {palavra}")
+                    exibir(f"\n SEU PAPEL: {papel} |  SUA PALAVRA: {palavra}")
 
                 elif msg.startswith("CHAT_START"):
                     with self.vt_lock:
                         self.vt.clear()   #Ao iniciar o chat, limpamos o vetor de timestamp local (para começar uma sincronização nova) e o buffer de mensagens para evitar mensagens antigas sendo exibidas
                         self.buffer_msgs.clear()
-                    print(f"\n {msg.split('|')[-1].split(':', 1)[1]}")
+                    exibir(f"\n {msg.split('|')[-1].split(':', 1)[1]}")
 
                 elif msg.startswith("TIP_REQ") or msg.startswith("CHAT_END"):
-                    print(f"\n {msg.split('|')[-1].split(':', 1)[1]}")
+                    exibir(f"\n {msg.split('|')[-1].split(':', 1)[1]}")
 
                 elif msg.startswith("ALL_TIPS"):
-                    print("\n --- DICAS DO GRUPO ---")
+                    exibir("\n --- DICAS DO GRUPO ---")
                     for d in msg.split("|")[1].split(":", 1)[1].split("&&"):
-                        print(f"   - {d}")
+                        exibir(f"   - {d}")
 
                 elif msg.startswith("ROUND_END"):
-                    print(f"\n {msg.split('|')[1].split(':', 1)[1]}")
+                    exibir(f"\n {msg.split('|')[1].split(':', 1)[1]}")
 
             except Exception:
                 break
 
         if not self.rejeitado:  #Se não chegou nenhuma mensagem do servidor em 2 segundos, assumimos que o servidor caiu ou reiniciou:
-            print("\n [ALERTA DE FALHA] O Cérebro caiu ou reiniciou!")
+            exibir("\n [ALERTA DE FALHA] O Cérebro caiu ou reiniciou!")
             delay_aleatorio = 3.0 + random.uniform(0.1, 1.0)   #Jitter aleatório para que os nós não entrem na eleição ao mesmo tempo
-            print(f">>> Reconfigurando o barramento via Algoritmo Bully em {delay_aleatorio:.2f} segundos...")
+            exibir(f">>> Reconfigurando o barramento via Algoritmo Bully em {delay_aleatorio:.2f} segundos...")
             self.queda_silenciosa = True
             time.sleep(delay_aleatorio)
 
@@ -498,7 +521,7 @@ class ClienteJogador:
                             break
 
                     if cond1 and cond2:
-                        print(f"[{r}]: {m['t']}")  #Printando o remetente e a mensagem, já que todas as dependências foram satisfeitas
+                        exibir(f"[{r}]: {m['t']}")  #Printando o remetente e a mensagem, já que todas as dependências foram satisfeitas
                         self.vt[r] += 1
                         self.buffer_msgs.remove(m)
                         entregou = True
@@ -547,8 +570,16 @@ def capturar_teclado(fila):
     #Thread dedicada para não travar a leitura da rede enquanto o usuário digita
     while True:
         try:
-            texto = sys.stdin.readline().strip()
-            if texto:
-                fila.put(texto)
+            texto = input()
+            texto_strip = texto.strip()
+            if texto_strip:
+                if readline:
+                    # Move o cursor para cima 1 linha e apaga o texto bruto digitado localmente
+                    sys.stdout.write('\033[1A\r\033[K')
+                    sys.stdout.flush()
+                fila.put(texto_strip)
+        except (KeyboardInterrupt, EOFError):
+            import os
+            os._exit(0)
         except:
             pass

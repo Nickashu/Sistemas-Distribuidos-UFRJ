@@ -118,24 +118,6 @@ def executar_eleicao_bully(meu_id, host_jogo):
         return False   #Nesse caso, o processo atual aguarda que o nó superior assuma o papel de líder e entre como cliente
 
 
-def normalizar_lista_ips(texto_ips):
-    #Remove espaços, valida IPs e devolve a lista ordenada sem repetição:
-    ips = []
-    for item in texto_ips.split(","):
-        item = item.strip()
-        if not item:
-            continue
-        ips.append(str(ipaddress.ip_address(item)))  #Valida o IP e converte para string
-
-    ips_unicos = []
-    for ip in ips:
-        if ip not in ips_unicos:
-            ips_unicos.append(ip)
-
-    ips_unicos.sort(key=lambda valor: ipaddress.ip_address(valor))  #Ordena a lista de IPs em ordem crescente
-    return ips_unicos
-
-
 def iniciar_discovery_lan(meu_ip):
     #Inicia uma thread contínua que anuncia presença e coleta IPs de outros jogadores via UDP broadcast:
     ips_encontrados = {meu_ip}
