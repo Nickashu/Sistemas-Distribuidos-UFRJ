@@ -4,6 +4,7 @@ import socket
 import sys
 import threading
 import time
+import os
 
 from rede import HOST_LOCAL, PARES_DE_PALAVRAS, PORTA_JOGO, enviar_msg, LeitorSocket
 
@@ -15,23 +16,42 @@ try:
 except ImportError:
     readline = None
 
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
+
+#Estruturas de buffer para o Windows caractere-por-caractere
+BUFFER_DIGITACAO = ""
+BUFFER_LOCK = threading.Lock()
+
 def exibir(texto):
-    if readline:
-        # No Linux/WSL:
-        # 1. Pega o conteúdo que o usuário já tinha digitado
+    global BUFFER_DIGITACAO
+    if readline:  #Linux (onde o readline está disponível na biblioteca padrão do Python)
+        #Pega o conteúdo que o usuário já tinha digitado
         conteudo_digitado = readline.get_line_buffer()
-        # 2. Limpa a linha atual da tela
+        
+        #Limpa a linha atual da tela (apaga o que o usuário está digitando):
         sys.stdout.write('\r\033[K')
-        # 3. Escreve a mensagem recebida e desce a linha
+        
+        #Escreve a mensagem recebida e desce a linha:
         sys.stdout.write(f"{texto}\n")
-        # 4. Escreve de volta o texto que o usuário estava digitando na linha de baixo
+        
+        #Escreve de volta o texto que o usuário estava digitando na linha de baixo
         sys.stdout.write(conteudo_digitado)
         sys.stdout.flush()
-    else:
-        # Fallback simples e seguro para Windows (sem readline)
-        # Apenas imprime a mensagem normal sem limpar a linha para não "apagar" o texto digitado
+        
+        #Solicita ao readline para redesenhar o input do usuário e o prompt na linha de baixo:
+        #readline.redisplay()
+    elif msvcrt:  #No Windows (usando msvcrt):
+        #Limpa a linha atual do console, imprime a mensagem e reescreve o buffer temporário acumulado:
+        with BUFFER_LOCK:
+            sys.stdout.write(f'\r\033[K{texto}\n')
+            sys.stdout.write(BUFFER_DIGITACAO)
+            sys.stdout.flush()
+    else:  #Fallback se não houver readline nem msvcrt (Linux sem readline, por exemplo):
         print(texto)
-        #sys.stdout.flush()
+        sys.stdout.flush()
 
 #Classe do servidor (cérebro) do jogo, responsável por gerenciar o estado da partida e a comunicação com os clientes:
 class ServidorCerebro:
@@ -449,10 +469,13 @@ class ClienteJogador:
                     texto = partes[3].split(":", 1)[1]
 
                     if vt_str == "NULL":   #Se o vetor de timestamp for NULL, significa que a mensagem não precisa de ordenação causal e pode ser exibida imediatamente
-                        if readline or remetente != self.meu_nome:
+                        if readline or msvcrt or remetente != self.meu_nome:
                             exibir(f"[{remetente}]: {texto}")
                     else:
-                        self.processar_entrega_causal(remetente, vt_str, texto)
+                        if remetente == self.meu_nome:  #Nossa própria mensagem já teve o relógio incrementado localmente ao enviar. Exibimos ela imediatamente quando retorna do servidor.
+                            exibir(f"[{remetente}]: {texto}")
+                        else:   #Se for mensagem de outro jogador, precisamos processar a entrega causal:
+                            self.processar_entrega_causal(remetente, vt_str, texto)
 
                 elif msg.startswith("ROLE"):
                     papel = msg.split("|")[1].split(":", 1)[1]
@@ -567,19 +590,48 @@ class ClienteJogador:
 
 
 def capturar_teclado(fila):
-    #Thread dedicada para não travar a leitura da rede enquanto o usuário digita
-    while True:
-        try:
-            texto = input()
-            texto_strip = texto.strip()
-            if texto_strip:
-                if readline:
-                    # Move o cursor para cima 1 linha e apaga o texto bruto digitado localmente
-                    sys.stdout.write('\033[1A\r\033[K')
-                    sys.stdout.flush()
-                fila.put(texto_strip)
-        except (KeyboardInterrupt, EOFError):
-            import os
-            os._exit(0)
-        except:
-            pass
+    global BUFFER_DIGITACAO
+    
+    if msvcrt:  #Windows: lê caractere por caractere sem travar a escrita de rede
+        while True:
+            try:
+                ch = msvcrt.getwch()  #É bloqueante e espera até que o usuário pressione uma tecla
+                if ch == '\x03':  #Ctrl+C
+                    os._exit(0)
+                
+                with BUFFER_LOCK:
+                    if ch in ('\r', '\n'):   #Quando o usuário pressiona Enter, envia o conteúdo do buffer para a fila de inputs
+                        texto_final = BUFFER_DIGITACAO.strip()
+                        BUFFER_DIGITACAO = ""
+                        #Limpa a linha do terminal antes de enviar:
+                        sys.stdout.write('\r\033[K')
+                        sys.stdout.flush()
+                        if texto_final:
+                            fila.put(texto_final)
+                    elif ch in ('\x08', '\x7f'):  #Se for Backspace ou Delete, remove o último caractere do buffer e apaga do terminal
+                        if len(BUFFER_DIGITACAO) > 0:
+                            BUFFER_DIGITACAO = BUFFER_DIGITACAO[:-1]
+                            sys.stdout.write('\b \b')
+                            sys.stdout.flush()
+                    elif ord(ch) >= 32:  #Caractere imprimível
+                        BUFFER_DIGITACAO += ch
+                        sys.stdout.write(ch)
+                        sys.stdout.flush()
+            except:
+                pass
+    else:
+        #Linux (usa input padrão do terminal integrado ao readline do SO):
+        while True:
+            try:
+                texto = input()  #Lê a linha completa digitada pelo usuário. É bloqueante e só avança quando o usuário aperta Enter, mas não trava a thread de rede porque está em uma thread separada
+                texto_strip = texto.strip()
+                if texto_strip:
+                    if readline:
+                        #Move o cursor para cima 1 linha e apaga o texto bruto digitado localmente
+                        sys.stdout.write('\033[1A\r\033[K')
+                        sys.stdout.flush()
+                    fila.put(texto_strip)
+            except (KeyboardInterrupt, EOFError):
+                os._exit(0)
+            except:
+                pass
