@@ -50,23 +50,21 @@ import base64
 
 # Pares de palavras codificadas em Base64 para evitar que jogadores vejam as respostas lendo o código fonte:
 PARES_DE_PALAVRAS_CODIFICADAS = [
-    ("UHJhaWE=", "UGlzY2luYQ=="),
-    ("Q2FjaG9ycm8=", "TG9ibw=="),
-    ("VmlvbMOjbw==", "QmFpeG8="),
-    ("QXZpw6Nv", "SGVsaWPDs3B0ZXJv"),
-    ("Q29tcHV0YWRvcg==", "Q2VsdWxhcg=="),
-    ("TGl2cm8=", "Q2FkZXJubw=="),
-    ("Q2Fmw6k=", "Q2jDoQ=="),
-    ("RnV0ZWJvbA==", "QmFzcXVldGU="),
-    ("Q2Fycm8=", "TW90bw=="),
-    ("U29s", "THVh"),
-    ("Q2luZW1h", "VGVhdHJv"),
-    ("TWHDp8Oj", "UMOqcmE="),
-    ("R2F0bw==", "VGlncmU="),
-    ("Q2h1dmE=", "TmV2ZQ=="),
-    ("UGlhbm8=", "VGVjbGFkbw=="),
-    ("UmVsw7NnaW8=", "Q3JvbsO0bWV0cm8="),
-    ("UGl6emE=", "SGFtYsO6cmd1ZXI="),
+    ('VmlvbMOjbw==', 'QmFpeG8='),
+    ('UGVuYQ==', 'RMOz'),
+    ('QmF0ZXJpYQ==', 'UGlsaGE='),
+    ('TWFuZ2E=', 'R29sYQ=='),
+    ('U2VycmE=', 'TW9udGFuaGE='),
+    ('Q2FudG8=', 'TcO6c2ljYQ=='),
+    ('Q2Fibw==', 'U29sZGFkbw=='),
+    ('QmFuY28=', 'Q2FkZWlyYQ=='),
+    ('Q2FwaXRhbA==', 'RGluaGVpcm8='),
+    ('UmVkZQ==', 'SW50ZXJuZXQ='),
+    ('Rm9saGE=', 'UGFwZWw='),
+    ('UGF0YQ==', 'UMOp'),
+    ('VmVsYQ==', 'TMOibXBhZGE='),
+    ('UGxhbnRh', 'Rmxvcg=='),
+    ('TWFjYWNv', 'R29yaWxh')
 ]
 
 PARES_DE_PALAVRAS = [
